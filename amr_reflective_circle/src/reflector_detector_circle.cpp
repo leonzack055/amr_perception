@@ -1146,7 +1146,7 @@ private:
 		        double angle_test = 2 * std::atan2(best_pose.orientation.z, best_pose.orientation.w);
 		        //outFile<< best_pose.position.x <<","<<best_pose.position.y <<","<<angle_test<<std::endl;
 		        RCLCPP_INFO(this->get_logger(),
-		            "发布最终结果：圆心(%.3fm, %.3fm), jiaodu=%.3fm,t_w=%.3f,r_w=%.3f",
+		            "发布最终结果：圆心(%.3fm, %.3fm), 角度=%.3f弧度,平移权重=%.3f,旋转权重=%.3f",
 		            best_pose.position.x, best_pose.position.y, angle_test, poseSimple.translation_weight,poseSimple.rotation_weight);
 		    } else {
 		        RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光柱，不发布结果");
