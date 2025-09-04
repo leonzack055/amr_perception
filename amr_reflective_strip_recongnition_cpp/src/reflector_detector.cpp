@@ -166,7 +166,7 @@ private:
     	return Vector2d(final_x,final_y);
     }
 
-    std::vector transform_to_reflector_frame(double reflector_in_base_x, double reflector_in_base_y, double reflector_in_base_theta){
+    std::vector<double> transform_to_reflector_frame(double reflector_in_base_x, double reflector_in_base_y, double reflector_in_base_theta){
         /*
         修正版：转换小车位姿到反光条坐标系（解决xy符号反的问题）
         输入：反光条在小车坐标系（base_link）中的位姿 (x, y, theta)
@@ -184,15 +184,15 @@ private:
         
         // 修正小车在反光条坐标系中的方向（保持与旋转方向一致）
         double car_in_reflector_theta = -reflector_in_base_theta;
-        car_in_reflector_theta = (car_in_reflector_theta + M_PI) % (2 * M_PI) - M_PI;  // 归一化到[-π, π]
-        std::vector result_;
+        car_in_reflector_theta = fmod((car_in_reflector_theta + M_PI), (2 * M_PI)) - M_PI;  // 归一化到[-π, π]
+        std::vector<double> result_;
         result_.push_back(car_in_reflector_x);
         result_.push_back(car_in_reflector_y);
         result_.push_back(car_in_reflector_theta);
         return result_;
     }
 
-    std::vector transform_to_base_link(double lidar_x, double lidar_y, double lidar_theta){
+    std::vector<double> transform_to_base_link(double lidar_x, double lidar_y, double lidar_theta){
         /*
         二次坐标转换：激光雷达坐标系下的点→机器人基座坐标系（base_link）
         输入：lidar_x/lidar_y（激光雷达坐标系下的x/y，即car_position[0]/[1]）
@@ -206,8 +206,8 @@ private:
         double std_threshold_lidar_y = this->get_parameter("lidar_to_base_ty").as_double();
         double std_threshold_lidar_z = this->get_parameter("lidar_to_base_tz").as_double(); 
 
-        double cos_rz = std::cos(self.lidar_rz);
-        double sin_rz = std::sin(self.lidar_rz);
+        double cos_rz = std::cos(std_threshold_lidar_z);
+        double sin_rz = std::sin(std_threshold_lidar_z);
         
         // 旋转后的x/y（激光雷达相对于基座的旋转修正）
         double rotated_x = lidar_x * cos_rz - lidar_y * sin_rz;
@@ -220,13 +220,13 @@ private:
         // 3. 角度修正（叠加激光雷达的旋转偏移）
         double base_theta = lidar_theta + std_threshold_lidar_z;
         // 确保角度在[-π, π]范围内
-        base_theta = (base_theta + M_PI) % (2 * M_PI) - M_PI;
-        std::vector result_;
+        base_theta = fmod((base_theta + M_PI),(2 * M_PI))- M_PI;
+        std::vector<double> result_;
         result_.push_back(-base_x);
         result_.push_back(-base_y);
         result_.push_back(base_theta);
         return result_;
-
+    }
 
     // 统计离群点过滤
     std::vector<Vector2d> statistical_outlier_filter(const std::vector<Vector2d>& points)
@@ -1091,7 +1091,7 @@ private:
 						    }
 						}
 						Vector2d center_points_result =get_final_coor(center_points_,normal_theta);
-                        std::vector reflector_in_base_ = transform_to_base_link(center_points_result[0], center_points_result[1], normal_theta);
+                        std::vector reflector_in_base_ = transform_to_base_link(center_points_result.x, center_points_result.y, normal_theta);
 
                         //转换为“小车在反光条坐标系中的位姿”
                         std::vector car_r = transform_to_reflector_frame(reflector_in_base_[0], reflector_in_base_[1],reflector_in_base_[2]);
@@ -1129,7 +1129,7 @@ private:
             });
 
             geometry_msgs::msg::PoseStamped best_pose = best_detection[0].pose;
-            best_pose.header = msg->header  // 更新时间戳
+            best_pose.header = msg->header;  // 更新时间戳
             publisher_->publish(best_pose);
 
             double theta = 2 * std::atan2(best_pose.pose.orientation.z, best_pose.pose.orientation.w);
