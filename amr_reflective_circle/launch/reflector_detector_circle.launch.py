@@ -5,7 +5,7 @@ import os
 def generate_launch_description():
     # 定义节点
     reflector_detector_circle = Node(
-        package='amr_reflective_circle',
+        package='reflective_circle',
         executable='reflector_detector_circle',
         name='reflector_detector_circle',
         output='screen'
