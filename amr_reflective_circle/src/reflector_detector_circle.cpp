@@ -1222,8 +1222,8 @@ private:
       visualization_msgs::msg::MarkerArray marker_array;
       for (auto & landmark : local_detections) {
         poseSimple.tracking_from_landmark_transform = landmark.g_detection_.pose.pose;
-        poseSimple.translation_weight = landmark.g_detection_.translationW;
-        poseSimple.rotation_weight = landmark.g_detection_.rotationW;
+        poseSimple.translation_weight = landmark.g_detection_.translationW * 1e6;
+        poseSimple.rotation_weight = 1e5;
         poseSimple.id = landmark.id_str_;
         poses_array.push_back(poseSimple);
         // 发布可视化标记
