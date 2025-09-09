@@ -225,8 +225,8 @@ void LandmarkLocalizationNode::publishLandmarks(const std::vector<Landmark>& mat
     entry.tracking_from_landmark_transform.orientation.z = 0.0;
     
     // Set weights
-    entry.translation_weight = landmark.translation_weight;
-    entry.rotation_weight = landmark.rotation_weight;
+    entry.translation_weight = landmark.translation_weight  * 1e6;
+    entry.rotation_weight = 1e5;
     
     landmark_list.landmarks.push_back(entry);
   }
