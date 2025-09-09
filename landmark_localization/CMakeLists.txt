@@ -12,13 +12,8 @@ endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-
-# 定位到 colcon 工作空间根目录（假设当前 CMakeLists.txt 在 src/your_package 下）
-get_filename_component(COLCON_WS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../" ABSOLUTE)
-
 # Find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_auto REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -28,25 +23,12 @@ find_package(geometry_msgs REQUIRED)
 find_package(cartographer_ros_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
-
-# 对于同一个workspace中的cartographer，使用ament_auto_find_build_dependencies
-ament_auto_find_build_dependencies()
-
-# 关键：手动添加cartographer的包含路径
-# 假设cartographer在同一个workspace的src目录下
-set(CARTOGRAPHER_INCLUDE_DIRS 
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../cartographer/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../cartographer"
-)
+find_package(cartographer REQUIRED)
 
 # Include directories
 include_directories(
   include
-  ${CARTOGRAPHER_INCLUDE_DIRS}
 )
-
-# 打印调试信息
-message(STATUS "Cartographer include directories: ${CARTOGRAPHER_INCLUDE_DIRS}")
 
 add_library(landmark_reader STATIC
   src/landmark_reader.cpp
@@ -83,13 +65,12 @@ ament_target_dependencies(reflective_post_detector
 add_executable(landmark_localization_node
   src/landmark_localization_node.cpp
 )
-target_include_directories(landmark_localization_node PRIVATE
-  ${CARTOGRAPHER_INCLUDE_DIRS}
-)
+
 target_link_libraries(landmark_localization_node
   landmark_reader
   landmark_matcher
   reflective_post_detector
+  cartographer
 )
 ament_target_dependencies(landmark_localization_node
   rclcpp
