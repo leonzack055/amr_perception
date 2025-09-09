@@ -11,6 +11,7 @@
   <depend>amr_reflective_strip_recognition_cpp</depend>
   <depend>amr_reflective_strip_recognition</depend>
   <depend>amr_reflective_circle</depend>
+  <depend>landmark_localization</depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
