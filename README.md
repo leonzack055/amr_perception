@@ -6,11 +6,11 @@
 
 ## 反光条检测的python版本
 
-### ros2 launch amr_reflective_strip_recongnition yl.launch.py
+### ros2 launch amr_reflective_strip_recognition yl.launch.py
 
 ## 反光条检测的c++版本
 
-### ros2 launch amr_reflective_strip_recongnition_cpp reflector_detector.launch.py
+### ros2 launch amr_reflective_strip_recognition_cpp reflector_detector.launch.py
 
 ## 反光柱检测的代码
 
