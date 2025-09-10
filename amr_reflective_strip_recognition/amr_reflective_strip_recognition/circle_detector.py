@@ -561,9 +561,11 @@ class ReflectorDetector(Node):
             )
         else:
             # 无有效检测时发布空姿态
-            # empty_pose = PoseStamped(header=msg.header)
-            # self.publisher.publish(empty_pose)
-            self.get_logger().debug("未检测到有效反光条，不发布结果")
+            empty_pose = PoseStamped(header=msg.header)
+            empty_pose.pose.position.x = 0.0
+            empty_pose.pose.position.y = 0.0
+            self.publisher.publish(empty_pose)
+            self.get_logger().debug("未检测到有效反光条")
 
 def main(args=None):
     rclpy.init(args=args)

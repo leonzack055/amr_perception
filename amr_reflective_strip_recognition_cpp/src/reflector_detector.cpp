@@ -45,7 +45,7 @@ public:
         this->declare_parameter("arc_min_points", 8);
         this->declare_parameter("direction_tolerance", 0.785);
 
-        this->declare_parameter("lidar_to_base_tx", 3.5);
+        this->declare_parameter("lidar_to_base_tx", 0.35);
         this->declare_parameter("lidar_to_base_ty", 0.0);
         this->declare_parameter("lidar_to_base_tz", 3.1416);
 
@@ -1000,7 +1000,10 @@ private:
         // 提取高强度点
         std::vector<Vector2d> points;
         std::vector<float> high_intensities;
-        
+        geometry_msgs::msg::PoseStamped best_pose;
+        best_pose.header = msg->header;  // 更新时间戳
+        best_pose.pose.position.x = 0.0;
+        best_pose.pose.position.y = 0.0;
         for (size_t i = 0; i < msg->ranges.size(); ++i) {
             if (msg->intensities[i] > intensity_thresh &&
                 msg->ranges[i] > msg->range_min &&
@@ -1128,17 +1131,16 @@ private:
                     return a.confidence > b.confidence;
             });
 
-            geometry_msgs::msg::PoseStamped best_pose = best_detection[0].pose;
-            best_pose.header = msg->header;  // 更新时间戳
-            publisher_->publish(best_pose);
+            best_pose = best_detection[0].pose;
 
             double theta = 2 * std::atan2(best_pose.pose.orientation.z, best_pose.pose.orientation.w);
             RCLCPP_INFO(this->get_logger(),
                 "发布时间滤波后结果：中心(%.3fm, %.3fm), 方向=%.3frad, 置信度=%.2f",
                 best_pose.pose.position.x, best_pose.pose.position.y, theta, best_detection[0].confidence);
         } else {
-            RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光条，不发布结果");
+            RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光条");
         }
+        publisher_->publish(best_pose);
     }
 };
 
