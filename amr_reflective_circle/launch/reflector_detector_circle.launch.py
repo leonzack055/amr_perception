@@ -31,7 +31,7 @@ def generate_launch_description():
     
     min_cluster_points_arg = DeclareLaunchArgument(
         'min_cluster_points',
-        default_value='5.0',
+        default_value='4',
         description='聚类最小点数'
     )
     # 定义节点

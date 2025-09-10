@@ -40,21 +40,21 @@ public:
   : Node("reflector_detector_maker"), detection_id_counter_(0)
   {
     // 参数声明
-    this->declare_parameter("intensity_threshold_use", 200);
-    this->declare_parameter("cluster_eps", 0.04);
-    this->declare_parameter("min_cluster_points", 10);
+    this->declare_parameter("intensity_threshold_use", 1000);
+    this->declare_parameter("cluster_eps", 0.065);
+    this->declare_parameter("min_cluster_points", 4);
     this->declare_parameter("diameter_min", 0.05);
     this->declare_parameter("diameter_max", 0.12);
     this->declare_parameter("residual_avg_threshold", 0.01);
     this->declare_parameter("residual_std_threshold", 0.005);
     this->declare_parameter("residual_max_threshold", 0.02);
-    this->declare_parameter("stat_mean_k", 5);
+    this->declare_parameter("stat_mean_k", 4);
     this->declare_parameter("stat_std_threshold", 1.0);
     this->declare_parameter("max_history_age", 3);
     this->declare_parameter("match_distance_threshold", 0.1);
     this->declare_parameter("arc_threshold", 0.1);
     this->declare_parameter("max_arc_feature", 30.0);
-    this->declare_parameter("arc_min_points", 8);
+    this->declare_parameter("arc_min_points", 4);
     this->declare_parameter("direction_tolerance", 0.785);
     this->declare_parameter("residual_real", 0.032);
     this->declare_parameter("sensitivity", 2.0);
@@ -188,7 +188,7 @@ private:
   // 统计离群点过滤
   std::vector<Vector2d> statistical_outlier_filter(const std::vector<Vector2d> & points)
   {
-    if (points.size() < 10) {return points;}
+    if (points.size() < 4) {return points;}
 
     int mean_k = this->get_parameter("stat_mean_k").as_int();
     double std_threshold = this->get_parameter("stat_std_threshold").as_double();
@@ -1168,9 +1168,39 @@ private:
         if (diameter > diameter_min && diameter < diameter_max) {
           double arc_feature = calculate_arc_feature(cluster);
           double arc_threshold = this->get_parameter("arc_threshold").as_double();
-          double max_arc = this->get_parameter("max_arc_feature").as_double();
+          Vector2d real_p = circle_real(cluster);
+          double x_ = -real_p.x;
+          double y_ = -real_p.y;
+          double normal_theta = std::atan2(y_, x_);
+          if (normal_theta > M_PI) {
+            normal_theta = 2 * M_PI - normal_theta;
+          }
+          
+          double t_w = calculateTranslationWeight(circle.center, real_p);
+          double r_w = calculateRotationWeight(circle.center, real_p);
+          geometry_msgs::msg::PoseStamped pose;
+          pose.header = msg->header;
+          pose.pose.position.x = real_p.x;
+          pose.pose.position.y = real_p.y;
+          pose.pose.orientation.z = std::sin(normal_theta / 2);
+          pose.pose.orientation.w = std::cos(normal_theta / 2);
+
+          // 计算置信度
+          double confidence = std::min(1.0, 0.8 + 0.2 * (points.size() / 20.0)) *
+            std::min(1.0, circle.r_squared) *
+            std::min(1.0, arc_feature / arc_threshold);
+
+
+          Detection tmp_results;
+          tmp_results.pose = pose;
+          tmp_results.diameter = diameter;
+          tmp_results.confidence = confidence;
+          tmp_results.translationW = t_w;
+          tmp_results.rotationW = r_w;
+          current_detections.push_back(tmp_results);
+          //double max_arc = this->get_parameter("max_arc_feature").as_double();
           //RCLCPP_INFO(this->get_logger(), "info arc_feature: %f",arc_feature);
-          if (circle.avg_residual < this->get_parameter("residual_avg_threshold").as_double() &&
+          /*if (circle.avg_residual < this->get_parameter("residual_avg_threshold").as_double() &&
             circle.std_residual < this->get_parameter("residual_std_threshold").as_double() &&
             circle.max_residual < this->get_parameter("residual_max_threshold").as_double() &&
             arc_feature > arc_threshold && arc_feature < max_arc)
@@ -1204,7 +1234,7 @@ private:
             tmp_results.translationW = t_w;
             tmp_results.rotationW = r_w;
             current_detections.push_back(tmp_results);
-          }
+          }*/
         }
         RCLCPP_INFO(this->get_logger(), "完成反光柱聚类检测");
       }
