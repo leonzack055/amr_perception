@@ -174,9 +174,9 @@ std::vector<ReflectorBar> MatchAssigner::assignLandmarkToReflectorBar(
   std::vector<int> matched_detections =
       matchCurrentToHistory(global_detections);
   // 3. 局部融合
-  // std::vector<Detection> fused_global_detections =
-  //     updateTemporalFilter(global_detections, matched_detections);
-  std::vector<Detection> fused_global_detections = global_detections;
+  std::vector<Detection> fused_global_detections =
+      updateTemporalFilter(global_detections, matched_detections);
+  // std::vector<Detection> fused_global_detections = global_detections;
   // 3. 分配新ID
   for (int idx = 0; idx < matched_detections.size(); idx++) {
     if (matched_detections[idx] == -1) {

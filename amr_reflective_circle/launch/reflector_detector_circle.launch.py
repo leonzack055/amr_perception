@@ -8,7 +8,7 @@ def generate_launch_description():
     # 声明launch参数
     intensity_threshold_use_arg = DeclareLaunchArgument(
         'intensity_threshold_use',
-        default_value='1000',
+        default_value='1500',
         description='强度阈值'
     )
     
@@ -18,11 +18,6 @@ def generate_launch_description():
         description='弧线阈值'
     )
     
-    max_arc_feature_arg = DeclareLaunchArgument(
-        'max_arc_feature',
-        default_value='30.0',
-        description='最大弧线特征'
-    )
     cluster_eps_arg = DeclareLaunchArgument(
         'cluster_eps',
         default_value='0.064',
@@ -45,6 +40,25 @@ def generate_launch_description():
         default_value='0.8',
         description='强度最大占比'
     )
+
+    bar_radius_arg = DeclareLaunchArgument(
+        'residual_real',
+        default_value='0.032',
+        description='反光柱半径'
+    )
+
+    rotation_weight_arg = DeclareLaunchArgument(
+            'landmark_rotation_weight',
+            default_value='1e-2',
+            description='反光柱的旋转权重'
+        )
+
+    translation_weight_arg = DeclareLaunchArgument(
+            'landmark_translation_weight',
+            default_value='1e5',
+            description='反光柱的平移权重'
+        )
+
     # 定义节点
     reflector_detector_circle = Node(
         package='amr_reflective_circle',
@@ -54,11 +68,13 @@ def generate_launch_description():
         parameters=[{
             'intensity_threshold_use': LaunchConfiguration('intensity_threshold_use'),
             'arc_threshold': LaunchConfiguration('arc_threshold'),
-            'max_arc_feature': LaunchConfiguration('max_arc_feature'),
             'cluster_eps': LaunchConfiguration('cluster_eps'),
             'min_cluster_points': LaunchConfiguration('min_cluster_points'),
             'percentage_min': LaunchConfiguration('percentage_min'),
             'percentage_max': LaunchConfiguration('percentage_max'),
+            'residual_real': LaunchConfiguration('residual_real'),
+            "landmark_rotation_weight": LaunchConfiguration('landmark_rotation_weight'),
+            "landmark_translation_weight": LaunchConfiguration('landmark_translation_weight'),
         }]
     )
 
@@ -66,11 +82,13 @@ def generate_launch_description():
         # 参数声明
         intensity_threshold_use_arg,
         arc_threshold_arg,
-        max_arc_feature_arg,
         cluster_eps_arg,
         min_cluster_points_arg,
         percentage_min_arg,
         percentage_max_arg,
+        bar_radius_arg,
+        rotation_weight_arg,
+        translation_weight_arg,
         # 节点
         reflector_detector_circle
     ])
