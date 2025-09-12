@@ -75,32 +75,6 @@ geometry_msgs::msg::PoseStamped MatchAssigner::fusePoses(
       total_weight;
   fused_pose.pose.position.z = 0.0;  // 假设z坐标为0
 
-  /*
-  // 融合方向（四元数）
-  Quaternion q1;
-  q1.x = pose1.pose.orientation.x;
-  q1.y = pose1.pose.orientation.y;
-  q1.z = pose1.pose.orientation.z;
-  q1.w = pose1.pose.orientation.w;
-  Quaternion q2;
-  q2.x = pose2.pose.orientation.x;
-  q2.y = pose2.pose.orientation.y;
-  q2.z = pose2.pose.orientation.z;
-  q2.w = pose2.pose.orientation.w;
-  // 确保四元数在同一半球
-  if (q1.dot(q2) < 0) {
-    q2 = Quaternion(-q2.x, -q2.y, -q2.z, -q2.w);
-  }
-
-  // 球面线性插值
-  double t = weight1 / total_weight;
-  Quaternion q_fused = (q1 * t + q2 * (1.0 - t)).normalized();
-  fused_pose.pose.orientation.x = q_fused.x;
-  fused_pose.pose.orientation.y = q_fused.y;
-  fused_pose.pose.orientation.z = q_fused.z;
-  fused_pose.pose.orientation.w = q_fused.w;
-  */
-
   // １. 维持全局坐标 Identity
   fused_pose.pose.orientation.x = 0.0;
   fused_pose.pose.orientation.y = 0.0;
