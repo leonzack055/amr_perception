@@ -41,12 +41,10 @@ public:
   {
     // 参数声明
     this->declare_parameter("intensity_threshold_use", 1000);
-    this->declare_parameter("cluster_eps", 0.064);
+    this->declare_parameter("cluster_eps", 0.065);
     this->declare_parameter("min_cluster_points", 4);
     this->declare_parameter("diameter_min", 0.05);
     this->declare_parameter("diameter_max", 0.12);
-    this->declare_parameter("percentage_min", 0.2);
-    this->declare_parameter("percentage_max", 0.8);
     this->declare_parameter("residual_avg_threshold", 0.01);
     this->declare_parameter("residual_std_threshold", 0.005);
     this->declare_parameter("residual_max_threshold", 0.02);
@@ -88,31 +86,41 @@ private:
   std::shared_ptr<MatchAssigner> match_assigner_;
   std::map<int, HistoryEntry> detection_history_;
   int detection_id_counter_;
-  struct Vector2d {
-		double x, y;
-		Vector2d() : x(0), y(0) {}
-		Vector2d(double x, double y) : x(x), y(y) {}
-		Vector2d operator+(const Vector2d& other) const {
-		   return Vector2d(x + other.x, y + other.y);
-		}
-		
-		Vector2d operator-(const Vector2d& other) const {
-		    return Vector2d(x - other.x, y - other.y);
-		}
-		
-		Vector2d operator/(double scalar) const {
-		    return Vector2d(x / scalar, y / scalar);
-		}
-		
-		Vector2d& operator+=(const Vector2d& other) {
-		    x += other.x;
-		    y += other.y;
-		    return *this;
-		}
-		double norm() const{
-			return std::sqrt(x*x + y*y);
-		}
+  struct Vector2d
+  {
+    double x, y;
+    Vector2d()
+    : x(0), y(0) {}
+    Vector2d(double x, double y)
+    : x(x), y(y) {}
+
+    Vector2d operator+(const Vector2d & other) const
+    {
+      return Vector2d(x + other.x, y + other.y);
+    }
+
+    Vector2d operator-(const Vector2d & other) const
+    {
+      return Vector2d(x - other.x, y - other.y);
+    }
+
+    Vector2d operator/(double scalar) const
+    {
+      return Vector2d(x / scalar, y / scalar);
+    }
+
+    Vector2d & operator+=(const Vector2d & other)
+    {
+      x += other.x;
+      y += other.y;
+      return *this;
+    }
+    double norm() const
+    {
+      return std::sqrt(x * x + y * y);
+    }
   };
+
   double get_primary_direction(const std::vector<Vector2d> & points)
   {
     if (points.size() < 2) {return 0.0;}
@@ -170,225 +178,224 @@ private:
 
     return std::atan2(direction.y, direction.x);
   }
-  struct OrinParam{
-    std::vector<Vector2d> points;
-    std::vector<float> high;
-    std::vector<Vector2d> param_;
-  };
-  // 统计离群点过滤
-  OrinParam statistical_outlier_filter(const std::vector<Vector2d>& points,std::vector<float>& high_intensities,const std::vector<Vector2d>& param_ori)
+  Vector2d get_final_coor(Vector2d points, double angle)
   {
-    OrinParam result;
-    result.points = points;
-    result.high = high_intensities;
-    result.param_ = param_ori;
-    int min_cluster_points = this->get_parameter("min_cluster_points").as_int();
-    if (points.size() < min_cluster_points) return result;
+    double final_x = -std::cos(angle) * points.x - std::sin(angle) * points.y;
+    double final_y = std::sin(angle) * points.x - std::cos(angle) * points.y;
+    return Vector2d(final_x, final_y);
+  }
+
+  // 统计离群点过滤
+  std::vector<Vector2d> statistical_outlier_filter(const std::vector<Vector2d> & points)
+  {
+    if (points.size() < 4) {return points;}
 
     int mean_k = this->get_parameter("stat_mean_k").as_int();
     double std_threshold = this->get_parameter("stat_std_threshold").as_double();
 
     std::vector<double> mean_distances;
-    for (const auto& p : points) {
-        std::vector<double> distances;
-        for (const auto& other : points) {
-            if (&p != &other) {
-                distances.push_back((p - other).norm());
-            }
+    for (const auto & p : points) {
+      std::vector<double> distances;
+      for (const auto & other : points) {
+        if (&p != &other) {
+          distances.push_back((p - other).norm());
         }
-        std::sort(distances.begin(), distances.end());
-        double mean_dist = 0.0;
-        int count = std::min(mean_k, static_cast<int>(distances.size()));
-        for (int i = 0; i < count; ++i) {
-            mean_dist += distances[i];
-        }
-        mean_dist /= count;
-        mean_distances.push_back(mean_dist);
+      }
+      std::sort(distances.begin(), distances.end());
+      double mean_dist = 0.0;
+      int count = std::min(mean_k, static_cast<int>(distances.size()));
+      for (int i = 0; i < count; ++i) {
+        mean_dist += distances[i];
+      }
+      mean_dist /= count;
+      mean_distances.push_back(mean_dist);
     }
 
-    double mean = std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
+    double mean =
+      std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
     double std_dev = 0.0;
     for (double d : mean_distances) {
-        std_dev += (d - mean) * (d - mean);
+      std_dev += (d - mean) * (d - mean);
     }
     std_dev = sqrt(std_dev / mean_distances.size());
 
-    std::vector<Vector2d> filtered,filtered_params;
-    std::vector<float> filtered_high;
+    std::vector<Vector2d> filtered;
     for (size_t i = 0; i < points.size(); ++i) {
-        if (mean_distances[i] < mean + std_threshold * std_dev) {
-            filtered.push_back(points[i]);
-            filtered_high.push_back(high_intensities[i]);
-            filtered_params.push_back(param_ori[i]);
-        }
+      if (mean_distances[i] < mean + std_threshold * std_dev) {
+        filtered.push_back(points[i]);
+      }
     }
-    
-    result.points = filtered;
-    result.high = filtered_high;
-    result.param_ = filtered_params;
-    return result;
+    return filtered;
   }
-    // 计算点集的 k 近邻距离
-	std::vector<double> compute_knn_distances(const std::vector<Vector2d>& points, int k) {
-	    std::vector<double> avg_distances(points.size(), 0.0);
-	    
-	    for (size_t i = 0; i < points.size(); i++) {
-			std::vector<double> distances;
-			
-			// 计算当前点到所有其他点的距离
-			for (size_t j = 0; j < points.size(); j++) {
-				if (i != j) {
-				    distances.push_back(distanceTo(points[i],points[j]));
-				}
-			}
-			
-			// 排序距离
-			std::sort(distances.begin(), distances.end());
-			
-			// 取前 k 个最小距离的平均值
-			double sum = 0.0;
-			int count = std::min(k, static_cast<int>(distances.size()));
-			for (int idx = 0; idx < count; idx++) {
-				sum += distances[idx];
-			}
-			
-			avg_distances[i] = sum / count;
-	    }
-	    
-	    return avg_distances;
-	}
-
-	// 计算向量的中位数
-	double compute_median(std::vector<double> values) {
-	    if (values.empty()) {
-		return 0.0;
-	    }
-	    
-	    std::sort(values.begin(), values.end());
-	    size_t n = values.size();
-	    
-	    if (n % 2 == 0) {
-		return (values[n/2 - 1] + values[n/2]) / 2.0;
-	    } else {
-		return values[n/2];
-	    }
-	}
-
-	// DBSCAN 聚类算法实现
-	std::vector<int> dbscan(const std::vector<Vector2d>& points, double eps, int min_samples) {
-		std::vector<int> labels(points.size(), -1); // -1 表示噪声点
-		int cluster_id = 0;
-		
-		for (size_t i = 0; i < points.size(); i++) {
-		    if (labels[i] != -1) {
-		        continue; // 已经处理过的点
-		    }
-		    
-		    // 找到当前点的邻域点
-		    std::vector<size_t> neighbors;
-		    for (size_t j = 0; j < points.size(); j++) {
-		        if (i != j && distanceTo(points[i],points[j]) <= eps) {
-		            neighbors.push_back(j);
-		        }
-		    }
-		    
-		    // 检查是否为核心点
-		    if (int(neighbors.size()) < min_samples) {
-		        labels[i] = -1; // 标记为噪声点
-		        continue;
-		    }
-		    
-		    // 开始新的聚类
-		    cluster_id++;
-		    labels[i] = cluster_id;
-		    
-		    // 使用队列扩展聚类
-		    std::queue<size_t> cluster_queue;
-		    for (size_t neighbor : neighbors) {
-		        cluster_queue.push(neighbor);
-		    }
-		    
-		    while (!cluster_queue.empty()) {
-		        size_t current_idx = cluster_queue.front();
-		        cluster_queue.pop();
-		        
-		        if (labels[current_idx] == -1) {
-		            labels[current_idx] = cluster_id;
-		        } else if (labels[current_idx] != 0) {
-		            continue; // 已经处理过的点
-		        }
-		        
-		        labels[current_idx] = cluster_id;
-		        
-		        // 找到当前点的邻域点
-		        std::vector<size_t> current_neighbors;
-		        for (size_t j = 0; j < points.size(); j++) {
-		            if (current_idx != j && distanceTo(points[current_idx],points[j]) <= eps) {
-		                current_neighbors.push_back(j);
-		            }
-		        }
-		        
-		        // 如果当前点也是核心点，将其邻域点加入队列
-		        if (int(current_neighbors.size()) >= min_samples) {
-		            for (size_t neighbor : current_neighbors) {
-		                if (labels[neighbor] == -1 || labels[neighbor] == 0) {
-		                    cluster_queue.push(neighbor);
-		                }
-		            }
-		        }
-		    }
-		}
-		
-		return labels;
-	}
-
-	// 自适应 DBSCAN 聚类
-	std::vector<int> adaptive_dbscan(const std::vector<Vector2d>& points) {
-		int min_cluster_points = this->get_parameter("min_cluster_points").as_int();
-		double cluster_eps = this->get_parameter("cluster_eps").as_double();
-		if (int(points.size()) < min_cluster_points) {
-		    return std::vector<int>(points.size(), -1);
-		}
-		
-		// 计算 k 近邻距离
-		int k = 4;
-		std::vector<double> avg_distances = compute_knn_distances(points, k);
-		
-		// 计算中位数
-		double median_eps = compute_median(avg_distances);
-		
-		// 确定最终的 eps 值
-		double eps = std::max(cluster_eps, median_eps);
-		//RCLCPP_INFO(this->get_logger(), "info eps: %f", eps);
-		// 执行 DBSCAN 聚类
-		return dbscan(points, eps, min_cluster_points);
-	}
-    // 计算两点之间的欧氏距离
-    double distanceTo(const Vector2d& current_points,const Vector2d& other){
-        double dx = current_points.x - other.x;
-        double dy = current_points.y - other.y;
-        return std::sqrt(dx * dx + dy * dy);
+  // 计算两点之间的欧氏距离
+  double distanceTo(const Vector2d & current_points, const Vector2d & other)
+  {
+    double dx = current_points.x - other.x;
+    double dy = current_points.y - other.y;
+    return std::sqrt(dx * dx + dy * dy);
+  }
+  double calculateTranslationWeight(const Vector2d & current_points, const Vector2d & true_points)
+  {
+    double sensitivity = this->get_parameter("sensitivity").as_double();
+    double maxError = this->get_parameter("maxError").as_double();
+    double error = distanceTo(current_points, true_points);
+    double weigth_ = std::exp(-sensitivity * error / maxError);
+    return weigth_;
+  }
+  double calculateRotationWeight(const Vector2d & current_points, const Vector2d & true_points)
+  {
+    double sensitivity = this->get_parameter("sensitivity").as_double();
+    double maxangleError = this->get_parameter("maxangleError").as_double();
+    double currentAngle = std::atan2(-current_points.y, -current_points.x);
+    double realAngle = std::atan2(-true_points.y, -true_points.x);
+    double angleDiff = std::abs(realAngle - currentAngle);
+    if (angleDiff > M_PI) {
+      angleDiff = 2 * M_PI - angleDiff;
     }
-    double calculateTranslationWeight(const Vector2d& current_points,const Vector2d& true_points){
-    	double sensitivity = this->get_parameter("sensitivity").as_double();
-    	double maxError = this->get_parameter("maxError").as_double();
-    	double error = distanceTo(current_points,true_points);
-    	double weigth_ = std::exp(-sensitivity*error/maxError);
-    	return weigth_;
+    double weigth_ = std::exp(-sensitivity * angleDiff / maxangleError);
+    return weigth_;
+  }
+  // 计算点集的 k 近邻距离
+  std::vector<double> compute_knn_distances(const std::vector<Vector2d> & points, int k)
+  {
+    std::vector<double> avg_distances(points.size(), 0.0);
+
+    for (size_t i = 0; i < points.size(); i++) {
+      std::vector<double> distances;
+
+      // 计算当前点到所有其他点的距离
+      for (size_t j = 0; j < points.size(); j++) {
+        if (i != j) {
+          distances.push_back(distanceTo(points[i], points[j]));
+        }
+      }
+
+      // 排序距离
+      std::sort(distances.begin(), distances.end());
+
+      // 取前 k 个最小距离的平均值
+      double sum = 0.0;
+      int count = std::min(k, static_cast<int>(distances.size()));
+      for (int idx = 0; idx < count; idx++) {
+        sum += distances[idx];
+      }
+
+      avg_distances[i] = sum / count;
     }
-    double calculateRotationWeight(const Vector2d& current_points,const Vector2d& true_points){
-    	double sensitivity = this->get_parameter("sensitivity").as_double();
-    	double maxangleError = this->get_parameter("maxangleError").as_double();
-    	double currentAngle = std::atan2(-current_points.y,-current_points.x);
-    	double realAngle = std::atan2(-true_points.y,-true_points.x);
-    	double angleDiff = std::abs(realAngle-currentAngle);
-    	if(angleDiff > M_PI){
-    		angleDiff = 2*M_PI - angleDiff;
-    	}
-    	double weigth_ = std::exp(-sensitivity*angleDiff/maxangleError);
-    	return weigth_;
+
+    return avg_distances;
+  }
+
+  // 计算向量的中位数
+  double compute_median(std::vector<double> values)
+  {
+    if (values.empty()) {
+      return 0.0;
     }
-    // 圆拟合结果结构体
+
+    std::sort(values.begin(), values.end());
+    size_t n = values.size();
+
+    if (n % 2 == 0) {
+      return (values[n / 2 - 1] + values[n / 2]) / 2.0;
+    } else {
+      return values[n / 2];
+    }
+  }
+
+  // DBSCAN 聚类算法实现
+  std::vector<int> dbscan(const std::vector<Vector2d> & points, double eps, int min_samples)
+  {
+    std::vector<int> labels(points.size(), -1);             // -1 表示噪声点
+    int cluster_id = 0;
+
+    for (size_t i = 0; i < points.size(); i++) {
+      if (labels[i] != -1) {
+        continue;                 // 已经处理过的点
+      }
+
+      // 找到当前点的邻域点
+      std::vector<size_t> neighbors;
+      for (size_t j = 0; j < points.size(); j++) {
+        if (i != j && distanceTo(points[i], points[j]) <= eps) {
+          neighbors.push_back(j);
+        }
+      }
+
+      // 检查是否为核心点
+      if (int(neighbors.size()) < min_samples) {
+        labels[i] = -1;                 // 标记为噪声点
+        continue;
+      }
+
+      // 开始新的聚类
+      cluster_id++;
+      labels[i] = cluster_id;
+
+      // 使用队列扩展聚类
+      std::queue<size_t> cluster_queue;
+      for (size_t neighbor : neighbors) {
+        cluster_queue.push(neighbor);
+      }
+
+      while (!cluster_queue.empty()) {
+        size_t current_idx = cluster_queue.front();
+        cluster_queue.pop();
+
+        if (labels[current_idx] == -1) {
+          labels[current_idx] = cluster_id;
+        } else if (labels[current_idx] != 0) {
+          continue;                   // 已经处理过的点
+        }
+
+        labels[current_idx] = cluster_id;
+
+        // 找到当前点的邻域点
+        std::vector<size_t> current_neighbors;
+        for (size_t j = 0; j < points.size(); j++) {
+          if (current_idx != j && distanceTo(points[current_idx], points[j]) <= eps) {
+            current_neighbors.push_back(j);
+          }
+        }
+
+        // 如果当前点也是核心点，将其邻域点加入队列
+        if (int(current_neighbors.size()) >= min_samples) {
+          for (size_t neighbor : current_neighbors) {
+            if (labels[neighbor] == -1 || labels[neighbor] == 0) {
+              cluster_queue.push(neighbor);
+            }
+          }
+        }
+      }
+    }
+
+    return labels;
+  }
+
+  // 自适应 DBSCAN 聚类
+  std::vector<int> adaptive_dbscan(const std::vector<Vector2d> & points)
+  {
+    int min_cluster_points = this->get_parameter("min_cluster_points").as_int();
+    double cluster_eps = this->get_parameter("cluster_eps").as_double();
+    if (int(points.size()) < min_cluster_points) {
+      return std::vector<int>(points.size(), -1);
+    }
+
+    // 计算 k 近邻距离
+    int k = 4;
+    std::vector<double> avg_distances = compute_knn_distances(points, k);
+
+    // 计算中位数
+    double median_eps = compute_median(avg_distances);
+
+    // 确定最终的 eps 值
+    double eps = std::max(cluster_eps, median_eps);
+    //RCLCPP_INFO(this->get_logger(), "info eps: %f", eps);
+    // 执行 DBSCAN 聚类
+    return dbscan(points, eps, min_cluster_points);
+  }
+
+  // 圆拟合结果结构体
   struct CircleFitResult
   {
     Vector2d center;
@@ -558,50 +565,47 @@ private:
 
     return x;
   }
-    Vector2d circle_real(const std::vector<Vector2d>& points){
-    	double radius = this->get_parameter("residual_real").as_double();
-    	int n = points.size();
-		// 计算初始估计值
-		double mean_x = 0.0, mean_y = 0.0;
-		for (const auto& p : points) {
-		    mean_x += p.x;
-		    mean_y += p.y;
-		}
-		mean_x /= points.size();
-		mean_y /= points.size();
-		int maxIterations = 1000;
-		double learningRate = 0.1;
-		double tolerance = 1e-8;
-		for(int iter=0;iter<maxIterations;++iter){
-			Vector2d test_tmp(0,0);
-			double totalError = 0.0;
-			for(const auto& p : points){
-				double dx = p.x - mean_x;
-				double dy = p.y - mean_y;
-				double d_d = std::sqrt(dx*dx+dy*dy);
-				double error = d_d - radius;
-				totalError += error*error;
-				if(d_d>1e-10){
-					test_tmp.x += error*dx /d_d;
-					test_tmp.y += error*dy /d_d;
-				}
-			}
-			if(totalError < tolerance){
-				break;
-			}
-			mean_x += learningRate * test_tmp.x / n;
-			mean_y += learningRate * test_tmp.y / n;
-			if(iter % 100 == 0){
-				learningRate *= 0.9;
-			}
-		}
-		return Vector2d(mean_x,mean_y);
+  Vector2d circle_real(const std::vector<Vector2d> & points)
+  {
+    double radius = this->get_parameter("residual_real").as_double();
+    int n = points.size();
+    // 计算初始估计值
+    double mean_x = 0.0, mean_y = 0.0;
+    for (const auto & p : points) {
+      mean_x += p.x;
+      mean_y += p.y;
     }
-    int findMaxIndexStd(std::vector<float>& arr){
-    	auto max_it = std::max_element(arr.begin(),arr.end());
-    	return std::distance(arr.begin(),max_it);
+    mean_x /= points.size();
+    mean_y /= points.size();
+    int maxIterations = 1000;
+    double learningRate = 0.1;
+    double tolerance = 1e-8;
+    for (int iter = 0; iter < maxIterations; ++iter) {
+      Vector2d test_tmp(0, 0);
+      double totalError = 0.0;
+      for (const auto & p : points) {
+        double dx = p.x - mean_x;
+        double dy = p.y - mean_y;
+        double d_d = std::sqrt(dx * dx + dy * dy);
+        double error = d_d - radius;
+        totalError += error * error;
+        if (d_d > 1e-10) {
+          test_tmp.x += error * dx / d_d;
+          test_tmp.y += error * dy / d_d;
+        }
+      }
+      if (totalError < tolerance) {
+        break;
+      }
+      mean_x += learningRate * test_tmp.x / n;
+      mean_y += learningRate * test_tmp.y / n;
+      if (iter % 100 == 0) {
+        learningRate *= 0.9;
+      }
     }
-    CircleFitResult circle_fit(const std::vector<Vector2d> & points)
+    return Vector2d(mean_x, mean_y);
+  }
+  CircleFitResult circle_fit(const std::vector<Vector2d> & points)
   {
     CircleFitResult result;
     result.valid = false;
@@ -779,6 +783,17 @@ private:
     std_curvature = std::sqrt(std_curvature / curvatures.size());
     //RCLCPP_INFO(this->get_logger(), "info arc: %f,%f", mean_curvature,std_curvature);
     return mean_curvature / (std_curvature + 1e-6);
+  }
+
+  // 判断方向是否朝向雷达
+  bool is_direction_towards_radar(
+    double direction_theta, double center_x, double center_y,
+    double tolerance = 0.785)
+  {
+    double towards_radar_theta = std::atan2(-center_y, -center_x);
+    double angle_diff = std::abs(direction_theta - towards_radar_theta);
+    angle_diff = std::min(angle_diff, 2 * M_PI - angle_diff);
+    return angle_diff < tolerance;
   }
 
   // 计算点集的均值
@@ -1041,6 +1056,7 @@ private:
 
     return filtered_detections;
   }
+
   visualization_msgs::msg::Marker CreateLandmarkMarker(
     int landmark_index,
     const geometry_msgs::msg::PoseStamped & landmark_pose,
@@ -1064,171 +1080,207 @@ private:
     marker.pose = landmark_pose.pose;
     return marker;
   }
-  
+
   void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
   {
-        int intensity_thresh = this->get_parameter("intensity_threshold_use").as_int();
-        // 提取高强度点
-        std::vector<Vector2d> points;
-        std::vector<float> high_intensities;
-        std::vector<Vector2d> param_ori;
-        for (size_t i = 0; i < msg->ranges.size(); ++i) {
-            if (msg->intensities[i] > intensity_thresh &&
-                msg->ranges[i] > msg->range_min &&
-                msg->ranges[i] < msg->range_max &&
-                !std::isnan(msg->ranges[i])) {
-                
-                double angle = msg->angle_min + i * msg->angle_increment;
-                Vector2d tmp_p,tmp_param;
-                tmp_p.x = msg->ranges[i] * std::cos(angle);
-                tmp_p.y = msg->ranges[i] * std::sin(angle);
-                tmp_param.x = msg->ranges[i];
-                tmp_param.y = angle;
-                points.push_back(tmp_p);
-                high_intensities.push_back(msg->intensities[i]);
-                param_ori.push_back(tmp_param);
-            }
+    int intensity_thresh = this->get_parameter("intensity_threshold_use").as_int();
+    //RCLCPP_INFO(this->get_logger(), "实际使用的强度阈值: %d", intensity_thresh);
+
+    // 提取高强度点
+    std::vector<Vector2d> points;
+    std::vector<float> high_intensities;
+
+    for (size_t i = 0; i < msg->ranges.size(); ++i) {
+      if (msg->intensities[i] > intensity_thresh &&
+        msg->ranges[i] > msg->range_min &&
+        msg->ranges[i] < msg->range_max &&
+        !std::isnan(msg->ranges[i]))
+      {
+
+        double angle = msg->angle_min + i * msg->angle_increment;
+        Vector2d tmp_p;
+        tmp_p.x = msg->ranges[i] * std::cos(angle);
+        tmp_p.y = msg->ranges[i] * std::sin(angle);
+        points.push_back(tmp_p);
+        high_intensities.push_back(msg->intensities[i]);
+      }
+    }
+
+    //RCLCPP_INFO(this->get_logger(), "通过强度筛选的点数量: %zu", points.size());
+    if (points.empty()) {
+      RCLCPP_DEBUG(this->get_logger(), "未检测到高强度点，不发布结果");
+      return;
+    }
+
+    // 去噪
+    if (points.size() > 10) {
+      points = statistical_outlier_filter(points);
+    }
+
+    // 聚类
+    std::vector<int> labels;
+    if (int(points.size()) >= this->get_parameter("min_cluster_points").as_int()) {
+      labels = adaptive_dbscan(points);
+      //RCLCPP_INFO(this->get_logger(), "info lable size: %d", int(labels.size()));
+    } else {
+      labels = std::vector<int>(points.size(), -1);
+    }
+
+    // 提取有效聚类点
+    std::vector<Vector2d> valid_points;
+    std::vector<int> valid_labels;
+    for (size_t i = 0; i < points.size(); ++i) {
+      if (labels[i] != -1) {
+        valid_points.push_back(points[i]);
+        valid_labels.push_back(labels[i]);
+      }
+    }
+
+    if (valid_points.empty()) {
+      RCLCPP_INFO(this->get_logger(), "未检测到有效聚类，不发布结果");
+      return;
+    }
+    std::vector<int> unique_labels = valid_labels;
+    std::sort(unique_labels.begin(), unique_labels.end());
+    unique_labels.erase(
+      std::unique(unique_labels.begin(), unique_labels.end()),
+      unique_labels.end());
+
+
+    double diameter_min = this->get_parameter("diameter_min").as_double();
+    double diameter_max = this->get_parameter("diameter_max").as_double();
+    cartographer_ros_msgs::msg::LandmarkList landamrk_list;
+    std::vector<cartographer_ros_msgs::msg::LandmarkEntry> poses_array;
+    landamrk_list.header = msg->header;
+    std::vector<Detection> current_detections;
+    for (int label : unique_labels) {
+      std::vector<Vector2d> cluster;
+      for (size_t i = 0; i < valid_labels.size(); ++i) {
+        if (valid_labels[i] == label) {
+          cluster.push_back(valid_points[i]);
         }
-        
-        if (points.empty()) {
-            RCLCPP_DEBUG(this->get_logger(), "未检测到高强度点，不发布结果");
-            return;
-        }
-        int min_cluster_points_ = this->get_parameter("min_cluster_points").as_int();
-        // 去噪
-        if (points.size() > min_cluster_points_) {
-            OrinParam orin_points = statistical_outlier_filter(points,high_intensities,param_ori);
-            points = orin_points.points;
-            high_intensities = orin_points.high;
-            param_ori = orin_points.param_;
-        }
-        /*int high_index = findMaxIndexStd(high_intensities);
-        RCLCPP_INFO(this->get_logger(), "通过强度筛选的点数量: %zu,%d", points.size(),high_index);*/
-        // 聚类
-        std::vector<int> labels;
-        if (int(points.size()) >= this->get_parameter("min_cluster_points").as_int()) {
-            labels = adaptive_dbscan(points);
-        } else {
-            labels = std::vector<int>(points.size(), -1);
-        }
-        // 提取有效聚类点
-        std::vector<Vector2d> valid_points,valid_params;
-        std::vector<int> valid_labels;
-        std::vector<float> valid_high;
-        for (size_t i = 0; i < points.size(); ++i) {
-            if (labels[i] != -1) {
-                valid_points.push_back(points[i]);
-                valid_labels.push_back(labels[i]);
-                valid_high.push_back(high_intensities[i]);
-                valid_params.push_back(param_ori[i]);
-            }
-        }
-        if (valid_points.empty()) {
-            RCLCPP_INFO(this->get_logger(), "未检测到有效聚类，不发布结果");
-            return;
-        }
-        std::vector<int> unique_labels = valid_labels;
-        std::sort(unique_labels.begin(), unique_labels.end());
-        unique_labels.erase(std::unique(unique_labels.begin(), unique_labels.end()), unique_labels.end());
-        double percentage_min = this->get_parameter("percentage_min").as_double();
-        double percentage_max = this->get_parameter("percentage_max").as_double();
-        std::vector<Detection> current_detections;
-        cartographer_ros_msgs::msg::LandmarkList landamrk_list;
-        std::vector<cartographer_ros_msgs::msg::LandmarkEntry> poses_array;
-        landamrk_list.header = msg->header;
-        for (int label : unique_labels) {
-            std::vector<Vector2d> cluster,cluster_params;
-            std::vector<float> cluster_high;
-            for (size_t i = 0; i < valid_labels.size(); ++i) {
-                if (valid_labels[i] == label) {
-                    cluster.push_back(valid_points[i]);
-                    cluster_high.push_back(valid_high[i]);
-                    cluster_params.push_back(valid_params[i]);
-                }
-            }
-            int high_index_filter = findMaxIndexStd(cluster_high);
-            double percentageNumber = float(high_index_filter)/float(cluster.size());
-            RCLCPP_INFO(this->get_logger(), "占比: %f", percentageNumber);
-            if(percentageNumber>=percentage_min && percentageNumber<=percentage_max){
-              double radius_ = this->get_parameter("residual_real").as_double();
-              Vector2d center_points_result = cluster_params[high_index_filter];
-              double circle_center_x = (center_points_result.x +radius_)*std::cos(center_points_result.y);
-              double circle_center_y = (center_points_result.x +radius_)*std::sin(center_points_result.y);
-              RCLCPP_INFO(this->get_logger(), "识别坐标: %f,%f", circle_center_x,circle_center_y);
-              double normal_theta = std::atan2(circle_center_y,circle_center_x);
-                  if(normal_theta > M_PI){
-                normal_theta = 2*M_PI - normal_theta;
-              }
-              Vector2d percept_p(circle_center_x,circle_center_y);
-              Vector2d real_p = circle_real(cluster);
-              double t_w = calculateTranslationWeight(percept_p,real_p);
-              double r_w = calculateRotationWeight(percept_p,real_p);
-              geometry_msgs::msg::PoseStamped pose;
-              pose.header = msg->header;
-              pose.pose.position.x = circle_center_x;
-              pose.pose.position.y = circle_center_y;
-              pose.pose.orientation.z = std::sin(normal_theta / 2);
-              pose.pose.orientation.w = std::cos(normal_theta / 2);
-              
-              CircleFitResult circle = circle_fit(cluster);
-              double diameter = 2 * circle.radius;
-              double arc_feature = calculate_arc_feature(cluster);
-              double arc_threshold = this->get_parameter("arc_threshold").as_double();
-              // 计算置信度
-              double confidence = std::min(1.0, 0.8 + 0.2 * (cluster.size() / 20.0)) * 
-                            std::min(1.0, circle.r_squared) * 
-                            std::min(1.0, arc_feature / arc_threshold);
-              Detection tmp_results;
-              tmp_results.pose = pose;
-              tmp_results.diameter = diameter;
-              tmp_results.confidence = confidence;
-              tmp_results.translationW = t_w;
-              tmp_results.rotationW = r_w;
-              current_detections.push_back(tmp_results);
-              RCLCPP_INFO(this->get_logger(), "完成反光柱聚类检测");
-            }	
-		    }
-        // 进行检测结果发布
-        // 发布结果（简化时间滤波）
-        match_assigner_->setLaserFrame(msg->header.frame_id);
-        if (!current_detections.empty() && match_assigner_->isLandmarkDetectorOK()) {
-          RCLCPP_INFO_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1, "检测到反光柱,进行匹配跟踪....");
-          // 选择置信度最高的检测结果
-          cartographer_ros_msgs::msg::LandmarkEntry poseSimple;
-          std::vector<ReflectorBar> local_detections = match_assigner_->assignLandmarkToReflectorBar(
-            current_detections);
-          // 发布检测结果使用VisualMarker
-          visualization_msgs::msg::MarkerArray marker_array;
-          for (auto & landmark : local_detections) {
-            poseSimple.tracking_from_landmark_transform = landmark.g_detection_.pose.pose;
-            poseSimple.translation_weight = landmark.g_detection_.translationW * 1e6;
-            poseSimple.rotation_weight = 1e5;
-            poseSimple.id = landmark.id_str_;
-            poses_array.push_back(poseSimple);
-            // 发布可视化标记
-            marker_array.markers.push_back(
-              CreateLandmarkMarker(
-                landmark.id_, landmark.g_detection_.pose,
-                msg->header.frame_id, msg->header.stamp));
+      }
+      RCLCPP_INFO(this->get_logger(), "info dbscan lable: %d", int(cluster.size()));
+      CircleFitResult circle = circle_fit(cluster);
+      RCLCPP_INFO(this->get_logger(), "info arc_feature: %f,%f,%f",circle.center.x,circle.center.y,circle.radius*2);
+      if (circle.valid && circle.r_squared >= 0.85) {
+        double diameter = 2 * circle.radius;
+        if (diameter > diameter_min && diameter < diameter_max) {
+          double arc_feature = calculate_arc_feature(cluster);
+          double arc_threshold = this->get_parameter("arc_threshold").as_double();
+          Vector2d real_p = circle_real(cluster);
+          double x_ = -real_p.x;
+          double y_ = -real_p.y;
+          double normal_theta = std::atan2(y_, x_);
+          if (normal_theta > M_PI) {
+            normal_theta = 2 * M_PI - normal_theta;
           }
-          // 发布reflectors可视化标记
-          marker_publisher_->publish(marker_array);
-          RCLCPP_INFO_STREAM(
-            this->get_logger(), "检测出反光柱: " << local_detections.size() << "个");
-          for(auto & landmark : local_detections) {
-            RCLCPP_INFO_STREAM(
-              this->get_logger(),
-              "id: " << landmark.id_str_ << 
-              ", 圆心(" <<landmark.g_detection_.pose.pose.position.x <<
-              "," << landmark.g_detection_.pose.pose.position.y << ") tw="<<
-              landmark.g_detection_.translationW << " rw=" <<
-              landmark.g_detection_.rotationW);
-          }
-        } else {
-          RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光柱");
+          
+          double t_w = calculateTranslationWeight(circle.center, real_p);
+          double r_w = calculateRotationWeight(circle.center, real_p);
+          geometry_msgs::msg::PoseStamped pose;
+          pose.header = msg->header;
+          pose.pose.position.x = real_p.x;
+          pose.pose.position.y = real_p.y;
+          pose.pose.orientation.z = std::sin(normal_theta / 2);
+          pose.pose.orientation.w = std::cos(normal_theta / 2);
+
+          // 计算置信度
+          double confidence = std::min(1.0, 0.8 + 0.2 * (points.size() / 20.0)) *
+            std::min(1.0, circle.r_squared) *
+            std::min(1.0, arc_feature / arc_threshold);
+
+
+          Detection tmp_results;
+          tmp_results.pose = pose;
+          tmp_results.diameter = diameter;
+          tmp_results.confidence = confidence;
+          tmp_results.translationW = t_w;
+          tmp_results.rotationW = r_w;
+          current_detections.push_back(tmp_results);
+          //double max_arc = this->get_parameter("max_arc_feature").as_double();
+          //RCLCPP_INFO(this->get_logger(), "info arc_feature: %f",arc_feature);
+          /*if (circle.avg_residual < this->get_parameter("residual_avg_threshold").as_double() &&
+            circle.std_residual < this->get_parameter("residual_std_threshold").as_double() &&
+            circle.max_residual < this->get_parameter("residual_max_threshold").as_double() &&
+            arc_feature > arc_threshold && arc_feature < max_arc)
+          {
+            double x_ = -circle.center.x;
+            double y_ = -circle.center.y;
+            double normal_theta = std::atan2(y_, x_);
+            if (normal_theta > M_PI) {
+              normal_theta = 2 * M_PI - normal_theta;
+            }
+            Vector2d real_p = circle_real(cluster);
+            double t_w = calculateTranslationWeight(circle.center, real_p);
+            double r_w = calculateRotationWeight(circle.center, real_p);
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header = msg->header;
+            pose.pose.position.x = circle.center.x;
+            pose.pose.position.y = circle.center.y;
+            pose.pose.orientation.z = std::sin(normal_theta / 2);
+            pose.pose.orientation.w = std::cos(normal_theta / 2);
+
+            // 计算置信度
+            double confidence = std::min(1.0, 0.8 + 0.2 * (points.size() / 20.0)) *
+              std::min(1.0, circle.r_squared) *
+              std::min(1.0, arc_feature / arc_threshold);
+
+
+            Detection tmp_results;
+            tmp_results.pose = pose;
+            tmp_results.diameter = diameter;
+            tmp_results.confidence = confidence;
+            tmp_results.translationW = t_w;
+            tmp_results.rotationW = r_w;
+            current_detections.push_back(tmp_results);
+          }*/
         }
-        landamrk_list.landmarks = poses_array;
-        publisher_->publish(landamrk_list);
+        RCLCPP_INFO(this->get_logger(), "完成反光柱聚类检测");
+      }
+    }
+    // 进行检测结果发布
+    // 发布结果（简化时间滤波）
+    match_assigner_->setLaserFrame(msg->header.frame_id);
+    if (!current_detections.empty() && match_assigner_->isLandmarkDetectorOK()) {
+      RCLCPP_INFO_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1, "检测到反光柱,进行匹配跟踪....");
+      // 选择置信度最高的检测结果
+      cartographer_ros_msgs::msg::LandmarkEntry poseSimple;
+      std::vector<ReflectorBar> local_detections = match_assigner_->assignLandmarkToReflectorBar(
+        current_detections);
+      // 发布检测结果使用VisualMarker
+      visualization_msgs::msg::MarkerArray marker_array;
+      for (auto & landmark : local_detections) {
+        poseSimple.tracking_from_landmark_transform = landmark.g_detection_.pose.pose;
+        poseSimple.translation_weight = landmark.g_detection_.translationW * 1e6;
+        poseSimple.rotation_weight = 1e5;
+        poseSimple.id = landmark.id_str_;
+        poses_array.push_back(poseSimple);
+        // 发布可视化标记
+        marker_array.markers.push_back(
+          CreateLandmarkMarker(
+            landmark.id_, landmark.g_detection_.pose,
+            msg->header.frame_id, msg->header.stamp));
+      }
+      // 发布reflectors可视化标记
+      marker_publisher_->publish(marker_array);
+      RCLCPP_INFO_STREAM(
+        this->get_logger(), "检测出反光柱: " << local_detections.size() << "个");
+      for(auto & landmark : local_detections) {
+        RCLCPP_INFO_STREAM(
+          this->get_logger(),
+          "id: " << landmark.id_str_ << 
+          ", 圆心(" <<landmark.g_detection_.pose.pose.position.x <<
+          "," << landmark.g_detection_.pose.pose.position.y << ") tw="<<
+          landmark.g_detection_.translationW << " rw=" <<
+          landmark.g_detection_.rotationW);
+      }
+    } else {
+      RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光柱，不发布结果");
+    }
+
+    landamrk_list.landmarks = poses_array;
+    publisher_->publish(landamrk_list);
   }
 };
 

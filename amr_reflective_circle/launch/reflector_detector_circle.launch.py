@@ -34,6 +34,17 @@ def generate_launch_description():
         default_value='4',
         description='聚类最小点数'
     )
+    percentage_min_arg = DeclareLaunchArgument(
+        'percentage_min',
+        default_value='0.2',
+        description='强度最小占比'
+    )
+    
+    percentage_max_arg = DeclareLaunchArgument(
+        'percentage_max',
+        default_value='0.8',
+        description='强度最大占比'
+    )
     # 定义节点
     reflector_detector_circle = Node(
         package='amr_reflective_circle',
@@ -46,6 +57,8 @@ def generate_launch_description():
             'max_arc_feature': LaunchConfiguration('max_arc_feature'),
             'cluster_eps': LaunchConfiguration('cluster_eps'),
             'min_cluster_points': LaunchConfiguration('min_cluster_points'),
+            'percentage_min': LaunchConfiguration('percentage_min'),
+            'percentage_max': LaunchConfiguration('percentage_max'),
         }]
     )
 
@@ -56,6 +69,8 @@ def generate_launch_description():
         max_arc_feature_arg,
         cluster_eps_arg,
         min_cluster_points_arg,
+        percentage_min_arg,
+        percentage_max_arg,
         # 节点
         reflector_detector_circle
     ])
