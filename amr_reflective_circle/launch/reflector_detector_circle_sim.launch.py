@@ -46,6 +46,19 @@ def generate_launch_description():
         default_value='0.05',
         description='反光柱半径'
     )
+
+    rotation_weight_arg = DeclareLaunchArgument(
+            'landmark_rotation_weight',
+            default_value='1e2',
+            description='反光柱的旋转权重'
+        )
+
+    translation_weight_arg = DeclareLaunchArgument(
+            'landmark_translation_weight',
+            default_value='1e5',
+            description='反光柱的平移权重'
+        )
+
     # 定义节点
     reflector_detector_circle = Node(
         package='amr_reflective_circle',
@@ -60,6 +73,8 @@ def generate_launch_description():
             'percentage_min': LaunchConfiguration('percentage_min'),
             'percentage_max': LaunchConfiguration('percentage_max'),
             'residual_real': LaunchConfiguration('residual_real'),
+            "landmark_rotation_weight": LaunchConfiguration('landmark_rotation_weight'),
+            "landmark_translation_weight": LaunchConfiguration('landmark_translation_weight'),
         }],
         remappings=[
             ('scan', '/scan/front'),
@@ -75,6 +90,8 @@ def generate_launch_description():
         percentage_min_arg,
         percentage_max_arg,
         bar_radius_arg,
+        rotation_weight_arg,
+        translation_weight_arg,
         # 节点
-        reflector_detector_circle
+        reflector_detector_circle,
     ])

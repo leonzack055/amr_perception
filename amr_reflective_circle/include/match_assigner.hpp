@@ -21,6 +21,7 @@
 #include <vector>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <mutex>
 
 #include "reflector_common.hpp"
 
@@ -78,6 +79,8 @@ class MatchAssigner {
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
       global_reflector_publisher_;
   rclcpp::TimerBase::SharedPtr visualization_timer_;
+  // mutex
+  std::mutex reflector_bars_mutex_;
 };
 
 #endif  // MATCH_ASSIGNER_HPP_

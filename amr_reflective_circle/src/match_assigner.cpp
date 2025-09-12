@@ -166,6 +166,7 @@ std::vector<Detection> MatchAssigner::updateTemporalFilter(
 
 std::vector<ReflectorBar> MatchAssigner::assignLandmarkToReflectorBar(
     const std::vector<Detection>& current_detections) {
+  std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
   // 1. 转化为全局坐标系下的位姿
   std::vector<Detection> global_detections =
       getGlobalDetections(current_detections);
@@ -173,8 +174,9 @@ std::vector<ReflectorBar> MatchAssigner::assignLandmarkToReflectorBar(
   std::vector<int> matched_detections =
       matchCurrentToHistory(global_detections);
   // 3. 局部融合
-  std::vector<Detection> fused_global_detections =
-      updateTemporalFilter(global_detections, matched_detections);
+  // std::vector<Detection> fused_global_detections =
+  //     updateTemporalFilter(global_detections, matched_detections);
+  std::vector<Detection> fused_global_detections = global_detections;
   // 3. 分配新ID
   for (int idx = 0; idx < matched_detections.size(); idx++) {
     if (matched_detections[idx] == -1) {
@@ -194,7 +196,7 @@ std::vector<ReflectorBar> MatchAssigner::assignLandmarkToReflectorBar(
       RCLCPP_ERROR_STREAM(node_->get_logger(),
                           "分配新ID: " << new_reflectorbar.id_);
     } else {
-      RCLCPP_INFO_STREAM_THROTTLE(node_->get_logger(), *node_->get_clock(), 1,
+      RCLCPP_DEBUG_STREAM_THROTTLE(node_->get_logger(), *node_->get_clock(), 1,
                                   "区配旧ID: " << matched_detections[idx]);
     }
   }
@@ -238,6 +240,7 @@ bool MatchAssigner::time_check(rclcpp::Time time1, rclcpp::Time time2,
 
 void MatchAssigner::pose_callback(
     const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+  std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
   pose_msg_ = msg;
 }
 
@@ -300,6 +303,10 @@ std::vector<int> MatchAssigner::matchCurrentToHistory(
     } else if (track_distance < match_threshold_) {
       matched_detections[id] = track_id;
     }
+    // TODO： 只用局部里程不使用全局
+    //  if (track_distance < match_threshold_) {
+    //   matched_detections[id] = track_id;
+    // }
   }
   return matched_detections;
 }
@@ -309,17 +316,29 @@ void MatchAssigner::landmark_callback(
   for (const auto& marker_msg : msg->markers) {
     // 处理反光柱位姿
     if (marker_msg.ns == "Landmarks" && marker_msg.header.frame_id == "map") {
+      std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
       Eigen::Quaterniond g_orientation = Eigen::Quaterniond(
           marker_msg.pose.orientation.w, marker_msg.pose.orientation.x,
           marker_msg.pose.orientation.y, marker_msg.pose.orientation.z);
       int id = marker_msg.id;
       // TODO: check g_orientation　是否Identity
       if (!g_orientation.isApprox(Eigen::Quaterniond::Identity())) {
-        RCLCPP_WARN(node_->get_logger(), "landmark %d 不是全局坐标位姿", id);
+        // RCLCPP_WARN(node_->get_logger(), "landmark %d 不是全局坐标位姿", id);
       }
+      
       if (reflector_bars_.find(id) == reflector_bars_.end()) {
         RCLCPP_WARN(node_->get_logger(),
                     "landmark %d 没有经过匹配器就进行了发布，检查代码!", id);
+      }
+      if(reflector_bars_[id].id_ == id) {
+        auto old_global_pose  = transforms::ToRigid3d(reflector_bars_[id].g_detection_.pose.pose);
+        auto new_global_pose = transforms::ToRigid3d(marker_msg.pose);
+        auto relative_pose = old_global_pose.inverse() * new_global_pose;
+        auto yaw = transforms::GetYaw(relative_pose);
+        if(relative_pose.translation().norm() > 0.1) {
+          RCLCPP_INFO_STREAM(node_->get_logger(), "landmark " << id << " Carto优化后位姿更新, yaw: " << yaw 
+            << "，距离: " << relative_pose.translation().norm());
+        }
       }
       // 更新表中全局landmarks位姿　
       reflector_bars_[id].g_detection_.pose.pose = marker_msg.pose;

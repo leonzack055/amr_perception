@@ -284,6 +284,24 @@ std::ostream & operator<<(
 using Rigid3d = Rigid3<double>;
 using Rigid3f = Rigid3<float>;
 
+// Returns the yaw component in radians of the given 3D 'rotation'. Assuming
+// 'rotation' is composed of three rotations around X, then Y, then Z, returns
+// the angle of the Z rotation.
+template <typename T>
+T GetYaw(const Eigen::Quaternion<T>& rotation) {
+  const Eigen::Matrix<T, 3, 1> direction =
+      rotation * Eigen::Matrix<T, 3, 1>::UnitX();
+  return atan2(direction.y(), direction.x());
+}
+
+// Returns the yaw component in radians of the given 3D transformation
+// 'transform'.
+template <typename T>
+T GetYaw(const Rigid3<T>& transform) {
+  return GetYaw(transform.rotation());
+}
+
+
 
 inline Eigen::Vector3d ToEigen(const geometry_msgs::msg::Vector3 & vector3)
 {

@@ -57,6 +57,8 @@ public:
     this->declare_parameter("sensitivity", 2.0);
     this->declare_parameter("maxError", 1.0);
     this->declare_parameter("maxangleError", 0.1);
+    this->declare_parameter("landmark_rotation_weight", 1e2);
+    this->declare_parameter("landmark_translation_weight", 1.0);
 
     // 订阅和发布
     subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -69,6 +71,9 @@ public:
       "/reflector_markers", 10);
 
     RCLCPP_INFO(this->get_logger(), "反光柱检测节点初始化完成");
+    // 获取参数
+    landmark_rotation_weight_ = this->get_parameter("landmark_rotation_weight").as_double();
+    landmark_translation_weight_ = this->get_parameter("landmark_translation_weight").as_double();
   }
 
   void add_match_assigner(const std::shared_ptr<MatchAssigner> & match_assigner)
@@ -82,6 +87,8 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
   std::shared_ptr<MatchAssigner> match_assigner_;
   std::map<int, HistoryEntry> detection_history_;
+  double landmark_rotation_weight_;
+  double landmark_translation_weight_;
   int detection_id_counter_;
   struct Vector2d
   {
@@ -1079,6 +1086,7 @@ private:
     marker.color.b = 0.0;
     marker.color.a = 1.0;
     marker.pose = landmark_pose.pose;
+    marker.lifetime = rclcpp::Duration::from_seconds(1.0);
     return marker;
   }
 
@@ -1168,7 +1176,7 @@ private:
       }
       int high_index_filter = findMaxIndexStd(cluster_high);
       double percentageNumber = float(high_index_filter) / float(cluster.size());
-      RCLCPP_INFO(this->get_logger(), "占比: %f", percentageNumber);
+      // RCLCPP_INFO(this->get_logger(), "占比: %f", percentageNumber);
       if (percentageNumber >= percentage_min && percentageNumber <= percentage_max) {
         double radius_ = this->get_parameter("residual_real").as_double();
         Vector2d center_points_result = cluster_params[high_index_filter];
@@ -1176,7 +1184,7 @@ private:
           center_points_result.y);
         double circle_center_y = (center_points_result.x + radius_) * std::sin(
           center_points_result.y);
-        RCLCPP_INFO_STREAM(this->get_logger(), "识别坐标: ("<< circle_center_x << " , " << circle_center_y << ")");
+        // RCLCPP_INFO_STREAM(this->get_logger(), "识别坐标: ("<< circle_center_x << " , " << circle_center_y << ")");
         double normal_theta = std::atan2(circle_center_y, circle_center_x);
         if (normal_theta > M_PI) {
           normal_theta = 2 * M_PI - normal_theta;
@@ -1207,14 +1215,14 @@ private:
         tmp_results.translationW = t_w;
         tmp_results.rotationW = r_w;
         current_detections.push_back(tmp_results);
-        RCLCPP_INFO(this->get_logger(), "完成反光柱聚类检测");
+        // RCLCPP_INFO(this->get_logger(), "完成反光柱聚类检测");
       }
     }
     // 进行检测结果发布
     // 发布结果（简化时间滤波）
     match_assigner_->setLaserFrame(msg->header.frame_id);
     if (!current_detections.empty() && match_assigner_->isLandmarkDetectorOK()) {
-      RCLCPP_INFO_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1, "检测到反光柱,进行匹配跟踪....");
+      RCLCPP_DEBUG_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1, "检测到反光柱,进行匹配跟踪....");
       // 选择置信度最高的检测结果
       cartographer_ros_msgs::msg::LandmarkEntry poseSimple;
       std::vector<ReflectorBar> local_detections = match_assigner_->assignLandmarkToReflectorBar(
@@ -1223,8 +1231,8 @@ private:
       visualization_msgs::msg::MarkerArray marker_array;
       for (auto & landmark : local_detections) {
         poseSimple.tracking_from_landmark_transform = landmark.g_detection_.pose.pose;
-        poseSimple.translation_weight = landmark.g_detection_.translationW * 1e6;
-        poseSimple.rotation_weight = 0.0;
+        poseSimple.translation_weight = landmark.g_detection_.translationW * landmark_translation_weight_;
+        poseSimple.rotation_weight = landmark_rotation_weight_;
         poseSimple.id = landmark.id_str_;
         poses_array.push_back(poseSimple);
         // 发布可视化标记
@@ -1235,17 +1243,17 @@ private:
       }
       // 发布reflectors可视化标记
       marker_publisher_->publish(marker_array);
-      RCLCPP_INFO_STREAM(
-        this->get_logger(), "检测出反光柱: " << local_detections.size() << "个");
-      for (auto & landmark : local_detections) {
-        RCLCPP_INFO_STREAM(
-          this->get_logger(),
-          "id: " << landmark.id_str_ <<
-            ", 圆心(" << landmark.g_detection_.pose.pose.position.x <<
-            "," << landmark.g_detection_.pose.pose.position.y << ") tw=" <<
-            landmark.g_detection_.translationW << " rw=" <<
-            landmark.g_detection_.rotationW);
-      }
+      // RCLCPP_INFO_STREAM(
+      //   this->get_logger(), "检测出反光柱: " << local_detections.size() << "个");
+      // for (auto & landmark : local_detections) {
+      //   RCLCPP_INFO_STREAM(
+      //     this->get_logger(),
+      //     "id: " << landmark.id_str_ <<
+      //       ", 圆心(" << landmark.g_detection_.pose.pose.position.x <<
+      //       "," << landmark.g_detection_.pose.pose.position.y << ") tw=" <<
+      //       landmark.g_detection_.translationW << " rw=" <<
+      //       landmark.g_detection_.rotationW);
+      // }
     } else {
       RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光柱");
     }
