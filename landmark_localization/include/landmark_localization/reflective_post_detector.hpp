@@ -3,7 +3,6 @@
 #include <vector>
 #include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
-// 0903 xusha begin
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <memory>
@@ -23,7 +22,6 @@
 #include <queue>
 #include <unordered_set>
 #include <map>
-// 0903 xusha end
 
 namespace landmark_localization {
 
@@ -42,24 +40,18 @@ public:
     std::vector<ReflectivePost> detect(const sensor_msgs::msg::LaserScan::SharedPtr msg);
 
 private:
-    // 0903 xusha begin
     // 参数声明
-    int intensity_threshold_use = 200; // xusha-1000
-    double cluster_eps = 0.04;
-    int min_cluster_points = 10;
-    double diameter_min = 0.05;
-    double diameter_max = 0.12; // xusha-0.08
-    double residual_avg_threshold = 0.01;
-    double residual_std_threshold = 0.005;
-    double residual_max_threshold = 0.02;
-    int stat_mean_k = 5;
+    int intensity_threshold_use = 1000;
+    double cluster_eps = 0.064;
+    int min_cluster_points = 4;
+    double percentage_min = 0.2;
+    double percentage_max = 0.8;
+    int stat_mean_k = 4;
     double stat_std_threshold = 1.0;
     int max_history_age = 3;
     double match_distance_threshold = 0.1;
     double arc_threshold = 0.1;
-    double max_arc_feature = 30.0; // xusha-8.0
-    int arc_min_points = 8;
-    double direction_tolerance = 0.785;
+    int arc_min_points = 4;
     double residual_real = 0.032;
     double sensitivity = 2.0;
     double maxError = 1.0;
@@ -84,46 +76,53 @@ private:
 
     std::map<int, HistoryEntry> detection_history_;
     int detection_id_counter_;
-    struct Vector2d {
+    struct Vector2d
+    {
     double x, y;
-    Vector2d() : x(0), y(0) {}
-    Vector2d(double x, double y) : x(x), y(y) {}
-
-    Vector2d operator+(const Vector2d& other) const {
+    Vector2d()
+    : x(0), y(0) {}
+    Vector2d(double x, double y)
+    : x(x), y(y) {}
+    Vector2d operator+(const Vector2d & other) const
+    {
         return Vector2d(x + other.x, y + other.y);
     }
 
-    Vector2d operator-(const Vector2d& other) const {
+    Vector2d operator-(const Vector2d & other) const
+    {
         return Vector2d(x - other.x, y - other.y);
     }
 
-    Vector2d operator/(double scalar) const {
+    Vector2d operator/(double scalar) const
+    {
         return Vector2d(x / scalar, y / scalar);
     }
 
-    Vector2d& operator+=(const Vector2d& other) {
+    Vector2d & operator+=(const Vector2d & other)
+    {
         x += other.x;
         y += other.y;
         return *this;
     }
-    double norm() const{
-    return std::sqrt(x*x + y*y);
+    double norm() const
+    {
+      return std::sqrt(x * x + y * y);
     }
     };
-
-    double get_primary_direction(const std::vector<Vector2d>& points) {
-    if (points.size() < 2) return 0.0;
+    double get_primary_direction(const std::vector<Vector2d> & points)
+    {
+        if (points.size() < 2) {return 0.0;}
 
     // 计算均值
     Vector2d mean;
-    for (const auto& p : points) {
+    for (const auto & p : points) {
         mean += p;
     }
     mean = mean / static_cast<double>(points.size());
 
     // 计算协方差矩阵
     double cov_xx = 0.0, cov_xy = 0.0, cov_yy = 0.0;
-    for (const auto& p : points) {
+    for (const auto & p : points) {
         Vector2d centered = {p.x - mean.x, p.y - mean.y};
         cov_xx += centered.x * centered.x;
         cov_xy += centered.x * centered.y;
@@ -167,190 +166,188 @@ private:
 
     return std::atan2(direction.y, direction.x);
     }
-    Vector2d get_final_coor(Vector2d points,double angle){
-    double final_x = -std::cos(angle)*points.x-std::sin(angle)*points.y;
-    double final_y = std::sin(angle)*points.x-std::cos(angle)*points.y;
-    return Vector2d(final_x,final_y);
+    struct OrinParam
+    {
+        std::vector<Vector2d> points;
+        std::vector<float> high;
+        std::vector<Vector2d> param_;
+    };
+    // 统计离群点过滤
+    OrinParam statistical_outlier_filter(
+        const std::vector<Vector2d> & points,
+        std::vector<float> & high_intensities,
+        const std::vector<Vector2d> & param_ori)
+    {
+    OrinParam result;
+    result.points = points;
+    result.high = high_intensities;
+    result.param_ = param_ori;
+    if (points.size() < min_cluster_points) {return result;}
+
+    int mean_k = stat_mean_k;
+    double std_threshold = stat_std_threshold;
+
+    std::vector<double> mean_distances;
+    for (const auto & p : points) {
+        std::vector<double> distances;
+        for (const auto & other : points) {
+            if (&p != &other) {
+                    distances.push_back((p - other).norm());
+            }
+        }
+        std::sort(distances.begin(), distances.end());
+        double mean_dist = 0.0;
+        int count = std::min(mean_k, static_cast<int>(distances.size()));
+        for (int i = 0; i < count; ++i) {
+            mean_dist += distances[i];
+        }
+        mean_dist /= count;
+        mean_distances.push_back(mean_dist);
     }
 
-    // 统计离群点过滤
-    std::vector<Vector2d> statistical_outlier_filter(const std::vector<Vector2d>& points)
-    {
-        if (points.size() < 10) return points;
-
-        int mean_k = stat_mean_k;
-        double std_threshold = stat_std_threshold;
-
-        std::vector<double> mean_distances;
-        for (const auto& p : points) {
-            std::vector<double> distances;
-            for (const auto& other : points) {
-                if (&p != &other) {
-                    distances.push_back((p - other).norm());
-                }
-            }
-            std::sort(distances.begin(), distances.end());
-            double mean_dist = 0.0;
-            int count = std::min(mean_k, static_cast<int>(distances.size()));
-            for (int i = 0; i < count; ++i) {
-                mean_dist += distances[i];
-            }
-            mean_dist /= count;
-            mean_distances.push_back(mean_dist);
-        }
-
-        double mean = std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
+    double mean =
+      std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
         double std_dev = 0.0;
         for (double d : mean_distances) {
             std_dev += (d - mean) * (d - mean);
         }
         std_dev = sqrt(std_dev / mean_distances.size());
 
-        std::vector<Vector2d> filtered;
+        std::vector<Vector2d> filtered, filtered_params;
+        std::vector<float> filtered_high;
         for (size_t i = 0; i < points.size(); ++i) {
             if (mean_distances[i] < mean + std_threshold * std_dev) {
                 filtered.push_back(points[i]);
-            }
+                filtered_high.push_back(high_intensities[i]);
+                filtered_params.push_back(param_ori[i]);
+            }   
         }
-        return filtered;
-    }
-    // 计算两点之间的欧氏距离
-    double distanceTo(const Vector2d& current_points,const Vector2d& other){
-        double dx = current_points.x - other.x;
-        double dy = current_points.y - other.y;
-        return std::sqrt(dx * dx + dy * dy);
-    }
-    double calculateTranslationWeight(const Vector2d& current_points,const Vector2d& true_points){
-        double error = distanceTo(current_points,true_points);
-        double weight_ = std::exp(-sensitivity*error/maxError);
-        return weight_;
-    }
-    double calculateRotationWeight(const Vector2d& current_points,const Vector2d& true_points){
-        double currentAngle = std::atan2(-current_points.y,-current_points.x);
-        double realAngle = std::atan2(-true_points.y,-true_points.x);
-        double angleDiff = std::abs(realAngle-currentAngle);
-        if(angleDiff > M_PI){
-            angleDiff = 2*M_PI - angleDiff;
-        }
-        double weight_ = std::exp(-sensitivity*angleDiff/maxangleError);
-        return weight_;
+    
+        result.points = filtered;
+        result.high = filtered_high;
+        result.param_ = filtered_params;
+        return result;
     }
     // 计算点集的 k 近邻距离
-    std::vector<double> compute_knn_distances(const std::vector<Vector2d>& points, int k) {
-    std::vector<double> avg_distances(points.size(), 0.0);
+    std::vector<double> compute_knn_distances(const std::vector<Vector2d> & points, int k)
+    {
+        std::vector<double> avg_distances(points.size(), 0.0);
 
-    for (size_t i = 0; i < points.size(); i++) {
-    std::vector<double> distances;
+        for (size_t i = 0; i < points.size(); i++) {
+        std::vector<double> distances;
 
-    // 计算当前点到所有其他点的距离
-    for (size_t j = 0; j < points.size(); j++) {
-        if (i != j) {
-            distances.push_back(distanceTo(points[i],points[j]));
+        // 计算当前点到所有其他点的距离
+        for (size_t j = 0; j < points.size(); j++) {
+            if (i != j) {
+                distances.push_back(distanceTo(points[i], points[j]));
+            }
         }
-    }
 
-    // 排序距离
-    std::sort(distances.begin(), distances.end());
+        // 排序距离
+        std::sort(distances.begin(), distances.end());
 
-    // 取前 k 个最小距离的平均值
-    double sum = 0.0;
-    int count = std::min(k, static_cast<int>(distances.size()));
-    for (int idx = 0; idx < count; idx++) {
-        sum += distances[idx];
-    }
+        // 取前 k 个最小距离的平均值
+        double sum = 0.0;
+        int count = std::min(k, static_cast<int>(distances.size()));
+        for (int idx = 0; idx < count; idx++) {
+            sum += distances[idx];
+        }
 
-    avg_distances[i] = sum / count;
-    }
+        avg_distances[i] = sum / count;
+        }
 
-    return avg_distances;
+        return avg_distances;
     }
 
     // 计算向量的中位数
-    double compute_median(std::vector<double> values) {
-    if (values.empty()) {
-    return 0.0;
-    }
+    double compute_median(std::vector<double> values)
+    {
+        if (values.empty()) {
+            return 0.0;
+        }
 
-    std::sort(values.begin(), values.end());
-    size_t n = values.size();
+        std::sort(values.begin(), values.end());
+        size_t n = values.size();
 
-    if (n % 2 == 0) {
-    return (values[n/2 - 1] + values[n/2]) / 2.0;
-    } else {
-    return values[n/2];
-    }
+        if (n % 2 == 0) {
+            return (values[n / 2 - 1] + values[n / 2]) / 2.0;
+        } else {
+            return values[n / 2];
+        }
     }
 
     // DBSCAN 聚类算法实现
-    std::vector<int> dbscan(const std::vector<Vector2d>& points, double eps, int min_samples) {
-    std::vector<int> labels(points.size(), -1); // -1 表示噪声点
-    int cluster_id = 0;
+    std::vector<int> dbscan(const std::vector<Vector2d> & points, double eps, int min_samples)
+    {
+        std::vector<int> labels(points.size(), -1);             // -1 表示噪声点
+        int cluster_id = 0;
 
-    for (size_t i = 0; i < points.size(); i++) {
-        if (labels[i] != -1) {
-            continue; // 已经处理过的点
-        }
-        
-        // 找到当前点的邻域点
-        std::vector<size_t> neighbors;
-        for (size_t j = 0; j < points.size(); j++) {
-            if (i != j && distanceTo(points[i],points[j]) <= eps) {
-                neighbors.push_back(j);
+        for (size_t i = 0; i < points.size(); i++) {
+            if (labels[i] != -1) {
+                continue;                 // 已经处理过的点
             }
-        }
-        
-        // 检查是否为核心点
-        if (int(neighbors.size()) < min_samples) {
-            labels[i] = -1; // 标记为噪声点
-            continue;
-        }
-        
-        // 开始新的聚类
-        cluster_id++;
-        labels[i] = cluster_id;
-        
-        // 使用队列扩展聚类
-        std::queue<size_t> cluster_queue;
-        for (size_t neighbor : neighbors) {
-            cluster_queue.push(neighbor);
-        }
-        
-        while (!cluster_queue.empty()) {
-            size_t current_idx = cluster_queue.front();
-            cluster_queue.pop();
-            
-            if (labels[current_idx] == -1) {
-                labels[current_idx] = cluster_id;
-            } else if (labels[current_idx] != 0) {
-                continue; // 已经处理过的点
-            }
-            
-            labels[current_idx] = cluster_id;
             
             // 找到当前点的邻域点
-            std::vector<size_t> current_neighbors;
+            std::vector<size_t> neighbors;
             for (size_t j = 0; j < points.size(); j++) {
-                if (current_idx != j && distanceTo(points[current_idx],points[j]) <= eps) {
-                    current_neighbors.push_back(j);
+                if (i != j && distanceTo(points[i], points[j]) <= eps) {
+                    neighbors.push_back(j);
                 }
             }
             
-            // 如果当前点也是核心点，将其邻域点加入队列
-            if (int(current_neighbors.size()) >= min_samples) {
-                for (size_t neighbor : current_neighbors) {
-                    if (labels[neighbor] == -1 || labels[neighbor] == 0) {
-                        cluster_queue.push(neighbor);
+            // 检查是否为核心点
+            if (int(neighbors.size()) < min_samples) {
+                labels[i] = -1;                 // 标记为噪声点
+                continue;
+            }
+            
+            // 开始新的聚类
+            cluster_id++;
+            labels[i] = cluster_id;
+            
+            // 使用队列扩展聚类
+            std::queue<size_t> cluster_queue;
+            for (size_t neighbor : neighbors) {
+                cluster_queue.push(neighbor);
+            }
+            
+            while (!cluster_queue.empty()) {
+                size_t current_idx = cluster_queue.front();
+                cluster_queue.pop();
+                
+                if (labels[current_idx] == -1) {
+                    labels[current_idx] = cluster_id;
+                } else if (labels[current_idx] != 0) {
+                    continue;                   // 已经处理过的点
+                }
+                
+                labels[current_idx] = cluster_id;
+                
+                // 找到当前点的邻域点
+                std::vector<size_t> current_neighbors;
+                for (size_t j = 0; j < points.size(); j++) {
+                    if (current_idx != j && distanceTo(points[current_idx], points[j]) <= eps) {
+                        current_neighbors.push_back(j);
+                    }
+                }
+                
+                // 如果当前点也是核心点，将其邻域点加入队列
+                if (int(current_neighbors.size()) >= min_samples) {
+                    for (size_t neighbor : current_neighbors) {
+                        if (labels[neighbor] == -1 || labels[neighbor] == 0) {
+                            cluster_queue.push(neighbor);
+                        }
                     }
                 }
             }
         }
-    }
 
-    return labels;
+        return labels;
     }
 
     // 自适应 DBSCAN 聚类
-    std::vector<int> adaptive_dbscan(const std::vector<Vector2d>& points) {
+  std::vector<int> adaptive_dbscan(const std::vector<Vector2d> & points)
+  {
     if (int(points.size()) < min_cluster_points) {
         return std::vector<int>(points.size(), -1);
     }
@@ -368,7 +365,30 @@ private:
         // 执行 DBSCAN 聚类
         return dbscan(points, eps, min_cluster_points);
     }
-
+    // 计算两点之间的欧氏距离
+    double distanceTo(const Vector2d & current_points, const Vector2d & other)
+    {
+        double dx = current_points.x - other.x;
+        double dy = current_points.y - other.y;
+        return std::sqrt(dx * dx + dy * dy);
+    }
+    double calculateTranslationWeight(const Vector2d & current_points, const Vector2d & true_points)
+    {
+        double error = distanceTo(current_points, true_points);
+        double weigth_ = std::exp(-sensitivity * error / maxError);
+    	return weigth_;
+    }
+    double calculateRotationWeight(const Vector2d & current_points, const Vector2d & true_points)
+    {
+        double currentAngle = std::atan2(-current_points.y, -current_points.x);
+        double realAngle = std::atan2(-true_points.y, -true_points.x);
+        double angleDiff = std::abs(realAngle - currentAngle);
+        if (angleDiff > M_PI) {
+            angleDiff = 2 * M_PI - angleDiff;
+    	}
+        double weigth_ = std::exp(-sensitivity * angleDiff / maxangleError);
+    	return weigth_;
+    }
     // 圆拟合结果结构体
     struct CircleFitResult
     {
@@ -380,17 +400,19 @@ private:
         double r_squared;
         bool valid;
     };
-    struct Result {
+    struct Result
+    {
         std::vector<double> x;
         double cost;
         bool success;
     };
     static Result lm_optimize(
-        const std::function<std::vector<double>(const std::vector<double>&)>& residuals_func,
-        const std::vector<double>& initial_guess,
+        const std::function<std::vector<double>(const std::vector<double> &)> & residuals_func,
+        const std::vector<double> & initial_guess,
         int max_iterations = 100,
         double tol = 1e-6,
-        double lambda = 0.01) {
+    double lambda = 0.01)
+    {
         
         Result result;
         result.x = initial_guess;
@@ -402,7 +424,7 @@ private:
         // 计算初始残差和成本
         std::vector<double> r = residuals_func(x);
         double cost = 0.0;
-        for (double val : r) cost += val * val;
+        for (double val : r) {cost += val * val;}
         
         for (int iter = 0; iter < max_iterations; ++iter) {
             // 计算雅可比矩阵的近似（使用有限差分）
@@ -435,21 +457,21 @@ private:
                         H[i][j] += J[k][i] * J[k][j];
                     }
                     // 添加阻尼项
-                    if (i == j) H[i][j] += lambda;
+                    if (i == j) {H[i][j] += lambda;}
                 }
             }
             
             // 解线性系统: H * dx = -gradient
             std::vector<double> dx = solve_linear_system(H, gradient);
-            for (int i = 0; i < n; ++i) dx[i] = -dx[i];
+            for (int i = 0; i < n; ++i) {dx[i] = -dx[i];}
             
             // 尝试更新
             std::vector<double> x_new = x;
-            for (int i = 0; i < n; ++i) x_new[i] += dx[i];
+            for (int i = 0; i < n; ++i) {x_new[i] += dx[i];}
             
             std::vector<double> r_new = residuals_func(x_new);
             double cost_new = 0.0;
-            for (double val : r_new) cost_new += val * val;
+            for (double val : r_new) {cost_new += val * val;}
             
             // 检查是否接受更新
             if (cost_new < cost) {
@@ -465,7 +487,7 @@ private:
             
             // 检查收敛
             double grad_norm = 0.0;
-            for (double g : gradient) grad_norm += g * g;
+            for (double g : gradient) {grad_norm += g * g;}
             grad_norm = std::sqrt(grad_norm);
             
             if (grad_norm < tol) {
@@ -479,8 +501,9 @@ private:
         return result;
     }
     static std::vector<double> solve_linear_system(
-        const std::vector<std::vector<double>>& A,
-        const std::vector<double>& b) {
+        const std::vector<std::vector<double>> & A,
+        const std::vector<double> & b)
+    {
         
         int n = A.size();
         std::vector<std::vector<double>> Augmented(n, std::vector<double>(n + 1));
@@ -536,46 +559,53 @@ private:
         
         return x;
     }
-    Vector2d circle_real(const std::vector<Vector2d>& points){
-    double radius = residual_real;
-    int n = points.size();
-    // 计算初始估计值
-    double mean_x = 0.0, mean_y = 0.0;
-    for (const auto& p : points) {
-        mean_x += p.x;
-        mean_y += p.y;
-    }
-    mean_x /= points.size();
-    mean_y /= points.size();
-    int maxIterations = 1000;
-    double learningRate = 0.1;
-    double tolerance = 1e-8;
-    for(int iter=0;iter<maxIterations;++iter){
-        Vector2d test_tmp(0,0);
-        double totalError = 0.0;
-        for(const auto& p : points){
-            double dx = p.x - mean_x;
-            double dy = p.y - mean_y;
-            double d_d = std::sqrt(dx*dx+dy*dy);
-            double error = d_d - radius;
-            totalError += error*error;
-            if(d_d>1e-10){
-            test_tmp.x += error*dx /d_d;
-            test_tmp.y += error*dy /d_d;
+    Vector2d circle_real(const std::vector<Vector2d> & points)
+    {
+        double radius = residual_real;
+        int n = points.size();
+        // 计算初始估计值
+        double mean_x = 0.0, mean_y = 0.0;
+        for (const auto & p : points) {
+            mean_x += p.x;
+            mean_y += p.y;
+        }
+        mean_x /= points.size();
+        mean_y /= points.size();
+        int maxIterations = 1000;
+        double learningRate = 0.1;
+        double tolerance = 1e-8;
+        for (int iter = 0; iter < maxIterations; ++iter) {
+            Vector2d test_tmp(0, 0);
+            double totalError = 0.0;
+            for (const auto & p : points) {
+                double dx = p.x - mean_x;
+                double dy = p.y - mean_y;
+                double d_d = std::sqrt(dx * dx + dy * dy);
+                double error = d_d - radius;
+                totalError += error * error;
+                if (d_d > 1e-10) {
+                    test_tmp.x += error * dx / d_d;
+                    test_tmp.y += error * dy / d_d;
+                }
+            }
+            if (totalError < tolerance) {
+                break;
+            }
+            mean_x += learningRate * test_tmp.x / n;
+            mean_y += learningRate * test_tmp.y / n;
+            if (iter % 100 == 0) {
+                learningRate *= 0.9;
             }
         }
-        if(totalError < tolerance){
-            break;
-        }
-        mean_x += learningRate * test_tmp.x / n;
-        mean_y += learningRate * test_tmp.y / n;
-        if(iter % 100 == 0){
-            learningRate *= 0.9;
-        }
+        return Vector2d(mean_x, mean_y);
     }
-    return Vector2d(mean_x,mean_y);
+    int findMaxIndexStd(std::vector<float> & arr)
+    {
+        auto max_it = std::max_element(arr.begin(), arr.end());
+        return std::distance(arr.begin(), max_it);
     }
-    CircleFitResult circle_fit(const std::vector<Vector2d>& points) {
+    CircleFitResult circle_fit(const std::vector<Vector2d> & points)
+    {
         CircleFitResult result;
         result.valid = false;
         if (points.size() < 3) {
@@ -584,7 +614,7 @@ private:
 
         // 计算初始估计值
         double mean_x = 0.0, mean_y = 0.0;
-        for (const auto& p : points) {
+        for (const auto & p : points) {
             mean_x += p.x;
             mean_y += p.y;
         }
@@ -592,22 +622,23 @@ private:
         mean_y /= points.size();
 
         double mean_r = 0.0;
-        for (const auto& p : points) {
-            mean_r += std::sqrt((p.x - mean_x) * (p.x - mean_x) + 
-                                (p.y - mean_y) * (p.y - mean_y));
+        for (const auto & p : points) {
+            mean_r += std::sqrt(
+                (p.x - mean_x) * (p.x - mean_x) +
+                (p.y - mean_y) * (p.y - mean_y));
         }
         mean_r /= points.size();
 
         std::vector<double> initial_guess = {mean_x, mean_y, mean_r};
 
         // 定义残差函数
-        auto residuals_func = [&points](const std::vector<double>& params) -> std::vector<double> {
+        auto residuals_func = [&points](const std::vector<double> & params) -> std::vector<double> {
             double a = params[0];
             double b = params[1];
             double r = params[2];
             
             std::vector<double> residuals;
-            for (const auto& p : points) {
+            for (const auto & p : points) {
                 double residual = (p.x - a) * (p.x - a) + (p.y - b) * (p.y - b) - r * r;
                 residuals.push_back(residual);
             }
@@ -656,14 +687,14 @@ private:
             double mean_distance = 0.0;
             
             // 计算到中心的平均距离
-            for (const auto& p : points) {
+            for (const auto & p : points) {
                 double distance = std::sqrt((p.x - a) * (p.x - a) + (p.y - b) * (p.y - b));
                 mean_distance += distance;
             }
             mean_distance /= points.size();
             
             // 计算总平方和
-            for (const auto& p : points) {
+            for (const auto & p : points) {
                 double distance = std::sqrt((p.x - a) * (p.x - a) + (p.y - b) * (p.y - b));
                 ss_total += (distance - mean_distance) * (distance - mean_distance);
             }
@@ -674,7 +705,7 @@ private:
             }
             
             // 返回结果
-            result.center = Vector2d(a,b);
+            result.center = Vector2d(a, b);
             result.radius = r;
             result.avg_residual = avg_residual;
             result.std_residual = std_residual;
@@ -682,7 +713,7 @@ private:
             result.r_squared = r_squared;
             result.valid = true;
             
-        } catch (const std::exception& e) {
+        } catch (const std::exception & e) {
             std::cerr << "圆拟合失败: " << e.what() << std::endl;
         }
 
@@ -690,37 +721,38 @@ private:
     }
 
     // 弧度特征计算
-    double calculate_arc_feature(const std::vector<Vector2d>& points)
+    double calculate_arc_feature(const std::vector<Vector2d> & points)
     {
-        if (int(points.size()) < arc_min_points) return 0.0;
+        if (int(points.size()) < arc_min_points) {return 0.0;}
 
         double primary_dir = get_primary_direction(points);
         //RCLCPP_INFO(this->get_logger(), "info dir: %f", primary_dir);
         Vector2d center;
         center.x = 0;
         center.y = 0;
-        for (const auto& p : points) center += p;
+        for (const auto & p : points) {center += p;}
         center.x = center.x / points.size();
         center.y = center.y / points.size();
 
         // 旋转点到主方向坐标系
         
         std::vector<Vector2d> rotated_points;
-        for (const auto& p : points) {
-        double cos_dir = std::cos(primary_dir);
-        double sin_dir = std::sin(primary_dir);
-        Vector2d translated = p - center;
-        Vector2d rotated;
-        rotated.x = cos_dir*translated.x - sin_dir*translated.y;
-        rotated.y = sin_dir*translated.x + cos_dir*translated.y;
+        for (const auto & p : points) {
+            double cos_dir = std::cos(primary_dir);
+            double sin_dir = std::sin(primary_dir);
+            Vector2d translated = p - center;
+            Vector2d rotated;
+            rotated.x = cos_dir * translated.x - sin_dir * translated.y;
+            rotated.y = sin_dir * translated.x + cos_dir * translated.y;
             rotated_points.push_back(rotated);
         }
 
         // 按x坐标排序
-        std::sort(rotated_points.begin(), rotated_points.end(),
-                [](const Vector2d& a, const Vector2d& b) {
+        std::sort(
+            rotated_points.begin(), rotated_points.end(),
+            [](const Vector2d & a, const Vector2d & b) {
                     return a.x < b.x;
-                });
+            });
 
         // 简化实现：计算曲率特征
         std::vector<double> curvatures;
@@ -738,9 +770,10 @@ private:
             }
         }
 
-        if (curvatures.size() < 3) return 0.0;
+        if (curvatures.size() < 3) {return 0.0;}
 
-        double mean_curvature = std::accumulate(curvatures.begin(), curvatures.end(), 0.0) / curvatures.size();
+        double mean_curvature =
+            std::accumulate(curvatures.begin(), curvatures.end(), 0.0) / curvatures.size();
         double std_curvature = 0.0;
         for (double c : curvatures) {
             std_curvature += (c - mean_curvature) * (c - mean_curvature);
@@ -750,34 +783,28 @@ private:
         return mean_curvature / (std_curvature + 1e-6);
     }
 
-    // 判断方向是否朝向雷达
-    bool is_direction_towards_radar(double direction_theta, double center_x, double center_y, double tolerance = 0.785)
-    {
-        double towards_radar_theta = std::atan2(-center_y, -center_x);
-        double angle_diff = std::abs(direction_theta - towards_radar_theta);
-        angle_diff = std::min(angle_diff, 2 * M_PI - angle_diff);
-        return angle_diff < tolerance;
-    }
-
     // 计算点集的均值
-    Vector2d compute_mean(const std::vector<Vector2d>& points) {
-    double sum_x = 0.0, sum_y = 0.0;
-    for (const auto& p : points) {
-        sum_x += p.x;
-        sum_y += p.y;
-    }
-    return Vector2d(sum_x / points.size(), sum_y / points.size());
+    Vector2d compute_mean(const std::vector<Vector2d> & points)
+    {
+        double sum_x = 0.0, sum_y = 0.0;
+        for (const auto & p : points) {
+            sum_x += p.x;
+            sum_y += p.y;
+        }
+        return Vector2d(sum_x / points.size(), sum_y / points.size());
     }
     // 四舍五入到指定小数位
-    double roundTo(double value, int decimals) {
+    double roundTo(double value, int decimals)
+    {
     double factor = std::pow(10.0, decimals);
     return std::round(value * factor) / factor;
     }
     using DetectionHash = std::tuple<double, double, double, double, double, double, double, double>;
     // 创建检测哈希
-    DetectionHash createDetectionHash(const Detection& detection) {
-        const auto& pos = detection.pose.pose.position;
-        const auto& ori = detection.pose.pose.orientation;
+    DetectionHash createDetectionHash(const Detection & detection)
+    {
+        const auto & pos = detection.pose.pose.position;
+        const auto & ori = detection.pose.pose.orientation;
         
         return std::make_tuple(
             roundTo(pos.x, 4),
@@ -791,39 +818,46 @@ private:
         );
     }
     // 定义基本数据结构
-    struct Point {
-    double x, y, z;
+    struct Point
+    {
+        double x, y, z;
 
-    Point() : x(0), y(0), z(0) {}
-    Point(double x, double y, double z) : x(x), y(y), z(z) {}
+        Point()
+        : x(0), y(0), z(0) {}
+        Point(double x, double y, double z)
+        : x(x), y(y), z(z) {}
 
-    // 计算两点间距离
-    double distanceTo(const Point& other) const {
-        double dx = x - other.x;
-        double dy = y - other.y;
-        double dz = z - other.z;
-        return std::sqrt(dx*dx + dy*dy + dz*dz);
-    }
+        // 计算两点间距离
+        double distanceTo(const Point & other) const
+        {
+            double dx = x - other.x;
+            double dy = y - other.y;
+            double dz = z - other.z;
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
     };
     // 匹配当前检测与历史记录
-    std::map<DetectionHash, std::pair<int, HistoryEntry>> matchCurrentToHistory(const std::vector<Detection>& current_detections) {
-    double match_distance_threshold_ = match_distance_threshold;
+    std::map<DetectionHash, std::pair<int, HistoryEntry>> matchCurrentToHistory(
+        const std::vector<Detection> & current_detections)
+    {
+        double match_distance_threshold_ = match_distance_threshold;
         std::map<DetectionHash, std::pair<int, HistoryEntry>> matches;
         
         // 初始化匹配表
-        for (const auto& detection : current_detections) {
+        for (const auto & detection : current_detections) {
             matches[createDetectionHash(detection)] = std::make_pair(0, HistoryEntry());
         }
         
         // 创建历史记录的哈希映射
         std::map<DetectionHash, std::pair<int, HistoryEntry>> hist_hashes;
-        for (const auto& [id, entry] : detection_history_) {
-            Detection dummy_detection{entry.pose, entry.diameter, entry.confidence,entry.translationW,entry.rotationW};
+        for (const auto & [id, entry] : detection_history_) {
+            Detection dummy_detection{entry.pose, entry.diameter, entry.confidence, entry.translationW,
+                entry.rotationW};
             hist_hashes[createDetectionHash(dummy_detection)] = std::make_pair(id, entry);
         }
         
         // 匹配当前检测与历史记录
-        for (const auto& detection : current_detections) {
+        for (const auto & detection : current_detections) {
             auto current_hash = createDetectionHash(detection);
             Point current_pos;
             current_pos.x = detection.pose.pose.position.x;
@@ -832,7 +866,7 @@ private:
             std::pair<int, HistoryEntry> best_match;
             double min_distance = std::numeric_limits<double>::max();
             
-            for (const auto& [hist_hash, hist_info] : hist_hashes) {
+            for (const auto & [hist_hash, hist_info] : hist_hashes) {
                 Point hist_pos;
                 hist_pos.x = hist_info.second.pose.pose.position.x;
                 hist_pos.y = hist_info.second.pose.pose.position.y;
@@ -853,46 +887,59 @@ private:
         return matches;
     }
 
-    struct Quaternion {
-    double x, y, z, w;
+    struct Quaternion
+    {
+        double x, y, z, w;
 
-    Quaternion() : x(0), y(0), z(0), w(1) {}
-    Quaternion(double x, double y, double z, double w) : x(x), y(y), z(z), w(w) {}
+        Quaternion()
+        : x(0), y(0), z(0), w(1) {}
+        Quaternion(double x, double y, double z, double w)
+        : x(x), y(y), z(z), w(w) {}
 
-    // 四元数点积
-    double dot(const Quaternion& other) const {
-        return x*other.x + y*other.y + z*other.z + w*other.w;
-    }
-
-    // 四元数归一化
-    Quaternion normalized() const {
-        double norm = std::sqrt(x*x + y*y + z*z + w*w);
-        if (norm > 0) {
-            return Quaternion(x/norm, y/norm, z/norm, w/norm);
+        // 四元数点积
+        double dot(const Quaternion & other) const
+        {
+            return x * other.x + y * other.y + z * other.z + w * other.w;
         }
-        return *this;
-    }
 
-    // 四元数标量乘法
-    Quaternion operator*(double scalar) const {
-        return Quaternion(x*scalar, y*scalar, z*scalar, w*scalar);
-    }
+        // 四元数归一化
+        Quaternion normalized() const
+        {
+            double norm = std::sqrt(x * x + y * y + z * z + w * w);
+            if (norm > 0) {
+                return Quaternion(x / norm, y / norm, z / norm, w / norm);
+            }
+            return *this;
+        }
 
-    // 四元数加法
-    Quaternion operator+(const Quaternion& other) const {
-        return Quaternion(x+other.x, y+other.y, z+other.z, w+other.w);
-    }
+        // 四元数标量乘法
+        Quaternion operator*(double scalar) const
+        {
+            return Quaternion(x * scalar, y * scalar, z * scalar, w * scalar);
+        }
+
+        // 四元数加法
+        Quaternion operator+(const Quaternion & other) const
+        {
+            return Quaternion(x + other.x, y + other.y, z + other.z, w + other.w);
+        }
     };
 
     // 融合两个位姿
-    geometry_msgs::msg::PoseStamped fusePoses(const geometry_msgs::msg::PoseStamped& pose1, const geometry_msgs::msg::PoseStamped& pose2, double weight1, double weight2) {
+    geometry_msgs::msg::PoseStamped fusePoses(
+        const geometry_msgs::msg::PoseStamped & pose1,
+        const geometry_msgs::msg::PoseStamped & pose2,
+        double weight1, double weight2)
+    {
         geometry_msgs::msg::PoseStamped fused_pose;
         double total_weight = weight1 + weight2;
         
         // 融合位置
-        fused_pose.pose.position.x = (pose1.pose.position.x * weight1 + pose2.pose.position.x * weight2) / total_weight;
-        fused_pose.pose.position.y = (pose1.pose.position.y * weight1 + pose2.pose.position.y * weight2) / total_weight;
-        fused_pose.pose.position.z = 0.0; // 假设z坐标为0
+        fused_pose.pose.position.x =
+        (pose1.pose.position.x * weight1 + pose2.pose.position.x * weight2) / total_weight;
+        fused_pose.pose.position.y =
+        (pose1.pose.position.y * weight1 + pose2.pose.position.y * weight2) / total_weight;
+        fused_pose.pose.position.z = 0.0;     // 假设z坐标为0
         
         // 融合方向（四元数）
         Quaternion q1;
@@ -920,21 +967,22 @@ private:
         
         return fused_pose;
     }
-    std::vector<Detection> updateTemporalFilter(const std::vector<Detection>& current_detections) {
+    std::vector<Detection> updateTemporalFilter(const std::vector<Detection> & current_detections)
+    {
         auto matches = matchCurrentToHistory(current_detections);
         int max_history_age_ = max_history_age;
         // 创建检测哈希到检测对象的映射
         std::map<DetectionHash, Detection> detection_hash_map;
-        for (const auto& det : current_detections) {
+        for (const auto & det : current_detections) {
             detection_hash_map[createDetectionHash(det)] = det;
         }
         
         std::vector<Detection> filtered_detections;
         
-        for (const auto& [detection_hash, match_info] : matches) {
-            const auto& detection = detection_hash_map[detection_hash];
+        for (const auto & [detection_hash, match_info] : matches) {
+            const auto & detection = detection_hash_map[detection_hash];
             
-            if (match_info.first == 0) { // 未匹配到历史记录
+        if (match_info.first == 0) {       // 未匹配到历史记录
                 // 新检测结果，添加到历史
                 detection_history_[detection_id_counter_] = {
                     detection.pose,
@@ -949,7 +997,7 @@ private:
             } else {
                 // 匹配到历史记录，融合结果
                 int hist_id = match_info.first;
-                const auto& hist_data = match_info.second;
+                const auto & hist_data = match_info.second;
                 
                 geometry_msgs::msg::PoseStamped fused_pose = fusePoses(
                     detection.pose,
@@ -966,10 +1014,11 @@ private:
                     fused_confidence,
                     detection.translationW,
                     detection.rotationW,
-                    0 // 重置年龄
+                    0           // 重置年龄
                 };
                 
-                filtered_detections.push_back({
+                filtered_detections.push_back(
+                {
                     fused_pose,
                     detection.diameter,
                     fused_confidence,
@@ -981,7 +1030,7 @@ private:
         
         // 老化未匹配的历史记录
         for (auto it = detection_history_.begin(); it != detection_history_.end(); ) {
-            auto& [id, entry] = *it;
+            auto & [id, entry] = *it;
             
             if (entry.age > max_history_age_) {
                 it = detection_history_.erase(it);
@@ -994,7 +1043,6 @@ private:
         
         return filtered_detections;
     }
-    // 0903 xusha end
 };
 
 } // namespace landmark_localization
