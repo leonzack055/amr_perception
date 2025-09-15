@@ -188,7 +188,7 @@ private:
         double std_threshold_lidar_y = this->get_parameter("lidar_to_base_ty").as_double();
         double std_threshold_lidar_z = this->get_parameter("lidar_to_base_tz").as_double(); 
         // 小车在雷达坐标系下的位置和朝向
-        double X_car = -std_threshold_lidar_x;
+        double X_car = std_threshold_lidar_x;
         double Y_car = std_threshold_lidar_y;
         double theta_car = std_threshold_lidar_z;
         
