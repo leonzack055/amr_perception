@@ -1239,8 +1239,8 @@ private:
             RCLCPP_INFO(this->get_logger(),
                 "发布时间滤波后结果debug：中心(%.3fm, %.3fm), 方向=%.3frad, 置信度=%.2f",
                 ori_coor[0], ori_coor[1], ori_coor[2], best_detection[0].confidence);
-            //std::vector<double> car_r = transformCarToReflectorFrame(ori_coor);
-            std::vector<double> car_r = transformCarToReflectorFrame_test(ori_coor);
+            std::vector<double> car_r = transformCarToReflectorFrame(ori_coor);
+            //std::vector<double> car_r = transformCarToReflectorFrame_test(ori_coor);
             /*Vector2d center_points_result =get_final_coor(ori_coor,theta);
             std::vector reflector_in_base_ = transform_to_base_link(center_points_result.x, center_points_result.y, theta);
             //转换为“小车在反光条坐标系中的位姿”
