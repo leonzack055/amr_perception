@@ -1106,11 +1106,14 @@ private:
       {
 
         double angle = msg->angle_min + i * msg->angle_increment;
-        Vector2d tmp_p;
-        tmp_p.x = msg->ranges[i] * std::cos(angle);
-        tmp_p.y = msg->ranges[i] * std::sin(angle);
-        points.push_back(tmp_p);
-        high_intensities.push_back(msg->intensities[i]);
+        if(angle > 1.57 && angle < 4.712){
+            Vector2d tmp_p;
+            tmp_p.x = msg->ranges[i] * std::cos(angle);
+            tmp_p.y = msg->ranges[i] * std::sin(angle);
+            points.push_back(tmp_p);
+            high_intensities.push_back(msg->intensities[i]);
+        }
+        
       }
     }
 
@@ -1168,15 +1171,15 @@ private:
           cluster.push_back(valid_points[i]);
         }
       }
-      RCLCPP_INFO(this->get_logger(), "info dbscan lable: %d", int(cluster.size()));
+      //RCLCPP_INFO(this->get_logger(), "info dbscan lable: %d", int(cluster.size()));
       CircleFitResult circle = circle_fit(cluster);
-      RCLCPP_INFO(this->get_logger(), "info arc_feature: %f,%f,%f",circle.center.x,circle.center.y,circle.radius*2);
+      //RCLCPP_INFO(this->get_logger(), "info arc_feature: %f,%f,%f",circle.center.x,circle.center.y,circle.radius*2);
       if (circle.valid && circle.r_squared >= 0.85) {
         double diameter = 2 * circle.radius;
         if (diameter > diameter_min && diameter < diameter_max) {
           double arc_feature = calculate_arc_feature(cluster);
           double arc_threshold = this->get_parameter("arc_threshold").as_double();
-          Vector2d real_p = circle_real(cluster);
+          /*Vector2d real_p = circle_real(cluster);
           double x_ = -real_p.x;
           double y_ = -real_p.y;
           double normal_theta = std::atan2(y_, x_);
@@ -1205,10 +1208,10 @@ private:
           tmp_results.confidence = confidence;
           tmp_results.translationW = t_w;
           tmp_results.rotationW = r_w;
-          current_detections.push_back(tmp_results);
-          //double max_arc = this->get_parameter("max_arc_feature").as_double();
+          current_detections.push_back(tmp_results);*/
+          double max_arc = this->get_parameter("max_arc_feature").as_double();
           //RCLCPP_INFO(this->get_logger(), "info arc_feature: %f",arc_feature);
-          /*if (circle.avg_residual < this->get_parameter("residual_avg_threshold").as_double() &&
+          if (circle.avg_residual < this->get_parameter("residual_avg_threshold").as_double() &&
             circle.std_residual < this->get_parameter("residual_std_threshold").as_double() &&
             circle.max_residual < this->get_parameter("residual_max_threshold").as_double() &&
             arc_feature > arc_threshold && arc_feature < max_arc)
@@ -1230,7 +1233,7 @@ private:
             pose.pose.orientation.w = std::cos(normal_theta / 2);
 
             // 计算置信度
-            double confidence = std::min(1.0, 0.8 + 0.2 * (points.size() / 20.0)) *
+            double confidence = std::min(1.0, 0.8 + 0.2 * (cluster.size() / 20.0)) *
               std::min(1.0, circle.r_squared) *
               std::min(1.0, arc_feature / arc_threshold);
 
@@ -1242,7 +1245,7 @@ private:
             tmp_results.translationW = t_w;
             tmp_results.rotationW = r_w;
             current_detections.push_back(tmp_results);
-          }*/
+          }
         }
         RCLCPP_INFO(this->get_logger(), "完成反光柱聚类检测");
       }
