@@ -26,19 +26,19 @@ def generate_launch_description():
     
     min_cluster_points_arg = DeclareLaunchArgument(
         'min_cluster_points',
-        default_value='4',
+        default_value='12',
         description='聚类最小点数'
     )
-    percentage_min_arg = DeclareLaunchArgument(
-        'percentage_min',
-        default_value='0.4',
-        description='强度最小占比'
+    diameter_min_arg = DeclareLaunchArgument(
+        'diameter_min',
+        default_value='0.05',
+        description='最小估计直径'
     )
     
-    percentage_max_arg = DeclareLaunchArgument(
-        'percentage_max',
-        default_value='0.6',
-        description='强度最大占比'
+    diameter_max_arg = DeclareLaunchArgument(
+        'diameter_max',
+        default_value='0.15',
+        description='最大估计直径'
     )
 
     bar_radius_arg = DeclareLaunchArgument(
@@ -47,9 +47,15 @@ def generate_launch_description():
         description='反光柱半径'
     )
 
+    arc_min_points_arg = DeclareLaunchArgument(
+        'arc_min_points',
+        default_value='10',
+        description='拟合圆弧最小点数'
+    )
+
     rotation_weight_arg = DeclareLaunchArgument(
             'landmark_rotation_weight',
-            default_value='1e-2',
+            default_value='1e2',
             description='反光柱的旋转权重'
         )
 
@@ -62,20 +68,26 @@ def generate_launch_description():
     # 定义节点
     reflector_detector_circle = Node(
         package='amr_reflective_circle',
-        executable='reflector_detector_circle',
-        name='reflector_detector_circle',
+        executable='reflector_detector_circle_fit',
+        name='reflector_detector_circle_fit',
         output='screen',
+        arguments=['--ros-args', '--log-level', 'WARN'],
         parameters=[{
+            'use_sim_time': True,
             'intensity_threshold_use': LaunchConfiguration('intensity_threshold_use'),
             'arc_threshold': LaunchConfiguration('arc_threshold'),
             'cluster_eps': LaunchConfiguration('cluster_eps'),
             'min_cluster_points': LaunchConfiguration('min_cluster_points'),
-            'percentage_min': LaunchConfiguration('percentage_min'),
-            'percentage_max': LaunchConfiguration('percentage_max'),
+            'diameter_min': LaunchConfiguration('diameter_min'),
+            'diameter_max': LaunchConfiguration('diameter_max'),
+            'arc_min_points': LaunchConfiguration('arc_min_points'),
             'residual_real': LaunchConfiguration('residual_real'),
             "landmark_rotation_weight": LaunchConfiguration('landmark_rotation_weight'),
             "landmark_translation_weight": LaunchConfiguration('landmark_translation_weight'),
-        }]
+        }],
+        remappings=[
+            ('scan', '/scan/front'),
+        ]
     )
 
     return LaunchDescription([
@@ -83,12 +95,13 @@ def generate_launch_description():
         intensity_threshold_use_arg,
         arc_threshold_arg,
         cluster_eps_arg,
+        arc_min_points_arg,
         min_cluster_points_arg,
-        percentage_min_arg,
-        percentage_max_arg,
+        diameter_min_arg,
+        diameter_max_arg,
         bar_radius_arg,
         rotation_weight_arg,
         translation_weight_arg,
         # 节点
-        reflector_detector_circle
+        reflector_detector_circle,
     ])

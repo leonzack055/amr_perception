@@ -55,11 +55,13 @@ public:
     this->declare_parameter("arc_threshold", 0.1);
     this->declare_parameter("max_arc_feature", 30.0);
     this->declare_parameter("arc_min_points", 4);
-    this->declare_parameter("direction_tolerance", 0.785);
+    // this->declare_parameter("direction_tolerance", 0.785);
     this->declare_parameter("residual_real", 0.032);
     this->declare_parameter("sensitivity", 2.0);
     this->declare_parameter("maxError", 1.0);
     this->declare_parameter("maxangleError", 0.1);
+    this->declare_parameter("landmark_rotation_weight", 1e2);
+    this->declare_parameter("landmark_translation_weight", 1.0);
 
     // 订阅和发布
     subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -72,6 +74,10 @@ public:
       "/reflector_markers", 10);
 
     RCLCPP_INFO(this->get_logger(), "反光柱检测节点初始化完成");
+
+    // 获取参数
+    landmark_rotation_weight_ = this->get_parameter("landmark_rotation_weight").as_double();
+    landmark_translation_weight_ = this->get_parameter("landmark_translation_weight").as_double();
   }
 
   void add_match_assigner(const std::shared_ptr<MatchAssigner> & match_assigner)
@@ -85,6 +91,8 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
   std::shared_ptr<MatchAssigner> match_assigner_;
   std::map<int, HistoryEntry> detection_history_;
+  double landmark_rotation_weight_;
+  double landmark_translation_weight_;
   int detection_id_counter_;
   struct Vector2d
   {
@@ -1252,8 +1260,8 @@ private:
       visualization_msgs::msg::MarkerArray marker_array;
       for (auto & landmark : local_detections) {
         poseSimple.tracking_from_landmark_transform = landmark.g_detection_.pose.pose;
-        poseSimple.translation_weight = landmark.g_detection_.translationW * 1e6;
-        poseSimple.rotation_weight = 1e5;
+        poseSimple.translation_weight = landmark.g_detection_.translationW * landmark_translation_weight_;
+        poseSimple.rotation_weight = landmark_rotation_weight_;
         poseSimple.id = landmark.id_str_;
         poses_array.push_back(poseSimple);
         // 发布可视化标记
@@ -1276,7 +1284,7 @@ private:
           landmark.g_detection_.rotationW);
       }
     } else {
-      RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光柱，不发布结果");
+      RCLCPP_INFO_STREAM_THROTTLE(this->get_logger(), *this->get_clock(), 1, "未检测到有效反光柱，不发布结果....");
     }
 
     landamrk_list.landmarks = poses_array;

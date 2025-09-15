@@ -32,7 +32,24 @@ ament_target_dependencies(
   absl
 )
 
-install(TARGETS reflector_detector_circle
+add_executable(reflector_detector_circle_fit src/reflector_detector_circle_fit.cpp src/match_assigner.cpp)
+target_include_directories(reflector_detector_circle_fit PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_features(reflector_detector_circle_fit PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+ament_target_dependencies(
+  reflector_detector_circle_fit
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  cartographer_ros_msgs
+  visualization_msgs
+  tf2
+  tf2_ros
+  absl
+)
+
+install(TARGETS reflector_detector_circle reflector_detector_circle_fit
   DESTINATION lib/${PROJECT_NAME})
   
 # Install launch files
