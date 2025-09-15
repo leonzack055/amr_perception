@@ -22,6 +22,11 @@
 
 using namespace std::chrono_literals;
 
+std::ofstream outFile1("./test_cpp_circle_1.txt");
+std::ofstream outFile2("./test_cpp_circle_2.txt");
+std::ofstream outFile3("./test_cpp_circle_3.txt");
+std::ofstream outFile4("./test_cpp_circle_4.txt");
+
 class ReflectorDetector : public rclcpp::Node
 {
 public:
@@ -51,10 +56,13 @@ public:
 
         // 订阅和发布
         subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-            "/scan", 10, std::bind(&ReflectorDetector::scan_callback, this, std::placeholders::_1));
+            "/scan", 1, std::bind(&ReflectorDetector::scan_callback, this, std::placeholders::_1));
+
+        publisher_debug = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+            "/charger_relative_pose_debug", 1);
         
         publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-            "/charger_relative_pose", 10);
+            "/charger_relative_pose", 1);
 
         RCLCPP_INFO(this->get_logger(), "反光条检测节点初始化完成");
     }
@@ -75,6 +83,7 @@ private:
 
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr subscription_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher_debug;
     std::map<int, HistoryEntry> detection_history_;
     int detection_id_counter_;
     struct Vector2d {
@@ -160,6 +169,89 @@ private:
 		
 		return std::atan2(direction.y, direction.x);
 	}
+
+    // 角度归一化到 [-π, π]
+    double normalizeAngle(double angle) {
+        while (angle > M_PI) angle -= 2 * M_PI;
+        while (angle < -M_PI) angle += 2 * M_PI;
+        return angle;
+    }
+
+    // 将小车从雷达坐标系转换到反光条坐标系
+    std::vector<double> transformCarToReflectorFrame(std::vector<double> reflector_radar_pose) {
+        // 反光条中心点在雷达坐标系下的位置和朝向
+        double X_reflect = reflector_radar_pose[0];
+        double Y_reflect = reflector_radar_pose[1];
+        double theta_reflect = reflector_radar_pose[2];
+        
+        double std_threshold_lidar_x = this->get_parameter("lidar_to_base_tx").as_double();
+        double std_threshold_lidar_y = this->get_parameter("lidar_to_base_ty").as_double();
+        double std_threshold_lidar_z = this->get_parameter("lidar_to_base_tz").as_double(); 
+        // 小车在雷达坐标系下的位置和朝向
+        double X_car = -std_threshold_lidar_x;
+        double Y_car = std_threshold_lidar_y;
+        double theta_car = std_threshold_lidar_z;
+        
+        // 计算相对于反光条中心的偏移量
+        double deltaX = X_car - X_reflect;
+        double deltaY = Y_car - Y_reflect;
+        
+        // 反光条坐标系定义：
+        // X_reflect轴：垂直于反光条方向（即检测到的朝向）
+        // Y_reflect轴：平行于反光条方向（即朝向+90°）
+        
+        // 旋转变换：将偏移向量旋转到反光条坐标系
+        double cos_theta = cos(theta_reflect);
+        double sin_theta = sin(theta_reflect);
+        
+        // 将全局坐标转换到反光条坐标系
+        double x_reflect = deltaX * cos_theta + deltaY * sin_theta;
+        double y_reflect = -deltaX * sin_theta + deltaY * cos_theta;
+        
+        // 计算小车在反光条坐标系下的朝向
+        double theta_reflect_frame = normalizeAngle(theta_car - theta_reflect);
+        std::vector<double> result_;
+        result_.push_back(x_reflect);
+        result_.push_back(y_reflect);
+        result_.push_back(theta_reflect_frame);
+        return result_;
+    }
+
+    std::vector<double> transformCarToReflectorFrame_test(std::vector<double> reflector_radar_pose) {
+        // 反光条中心点在雷达坐标系下的位置和朝向
+        double X_reflect = reflector_radar_pose[0];
+        double Y_reflect = reflector_radar_pose[1];
+        double theta_reflect = reflector_radar_pose[2];
+        
+        double std_threshold_lidar_x = this->get_parameter("lidar_to_base_tx").as_double();
+        double std_threshold_lidar_y = this->get_parameter("lidar_to_base_ty").as_double();
+        double std_threshold_lidar_z = this->get_parameter("lidar_to_base_tz").as_double(); 
+        // 雷达_car坐标系下的位置和朝向
+        double X_car = std_threshold_lidar_x;
+        double Y_car = std_threshold_lidar_y;
+        double theta_car = -std_threshold_lidar_z;
+        
+        
+        // 反光条坐标系定义：
+        // X_reflect轴：垂直于反光条方向（即检测到的朝向）
+        // Y_reflect轴：平行于反光条方向（即朝向+90°）
+        
+        // 旋转变换：将偏移向量旋转到car坐标系
+        double cos_theta = cos(theta_car);
+        double sin_theta = sin(theta_car);
+        
+        // 将全局坐标转换到反光条坐标系
+        double x_reflect = X_reflect * cos_theta - Y_reflect * sin_theta - X_car;
+        double y_reflect = X_reflect * sin_theta + Y_reflect * cos_theta + Y_car;
+        
+        // 计算小车在反光条坐标系下的朝向
+        double theta_reflect_frame = normalizeAngle(theta_car + theta_reflect);
+        std::vector<double> result_;
+        result_.push_back(x_reflect);
+        result_.push_back(y_reflect);
+        result_.push_back(theta_reflect_frame);
+        return result_;
+    }
     Vector2d get_final_coor(Vector2d points,double angle){
     	double final_x = -std::cos(angle)*points.x-std::sin(angle)*points.y;
     	double final_y = std::sin(angle)*points.x-std::cos(angle)*points.y;
@@ -184,7 +276,8 @@ private:
         
         // 修正小车在反光条坐标系中的方向（保持与旋转方向一致）
         double car_in_reflector_theta = -reflector_in_base_theta;
-        car_in_reflector_theta = fmod((car_in_reflector_theta + M_PI), (2 * M_PI)) - M_PI;  // 归一化到[-π, π]
+        car_in_reflector_theta = normalizeAngle(car_in_reflector_theta); 
+        car_in_reflector_theta = car_in_reflector_theta - M_PI;// 归一化到[-π, π]
         std::vector<double> result_;
         result_.push_back(car_in_reflector_x);
         result_.push_back(car_in_reflector_y);
@@ -220,7 +313,7 @@ private:
         // 3. 角度修正（叠加激光雷达的旋转偏移）
         double base_theta = lidar_theta + std_threshold_lidar_z;
         // 确保角度在[-π, π]范围内
-        base_theta = fmod((base_theta + M_PI),(2 * M_PI))- M_PI;
+        base_theta = normalizeAngle(base_theta);
         std::vector<double> result_;
         result_.push_back(-base_x);
         result_.push_back(-base_y);
@@ -1004,6 +1097,11 @@ private:
         best_pose.header = msg->header;  // 更新时间戳
         best_pose.pose.position.x = 0.0;
         best_pose.pose.position.y = 0.0;
+
+        geometry_msgs::msg::PoseStamped best_pose_debug;
+        best_pose_debug.header = msg->header;  // 更新时间戳
+        best_pose_debug.pose.position.x = 0.0;
+        best_pose_debug.pose.position.y = 0.0;
         for (size_t i = 0; i < msg->ranges.size(); ++i) {
             if (msg->intensities[i] > intensity_thresh &&
                 msg->ranges[i] > msg->range_min &&
@@ -1087,24 +1185,16 @@ private:
 						double tangent_theta = get_primary_direction(cluster);
 						double normal_theta = tangent_theta - M_PI/2;
 						if (!is_direction_towards_radar(normal_theta, circle.center.x, circle.center.y, direction_tolerance)) 			 {
-						    normal_theta += M_PI;
-						    normal_theta = std::fmod(normal_theta + M_PI, 2 * M_PI) - M_PI;
-						    if (!is_direction_towards_radar(normal_theta, circle.center.x, circle.center.y, direction_tolerance)) {
-						    	continue;
-						    }
+						    normal_theta -= M_PI;
+						    normal_theta = normalizeAngle(normal_theta);
 						}
-						Vector2d center_points_result =get_final_coor(center_points_,normal_theta);
-                        std::vector reflector_in_base_ = transform_to_base_link(center_points_result.x, center_points_result.y, normal_theta);
-
-                        //转换为“小车在反光条坐标系中的位姿”
-                        std::vector car_r = transform_to_reflector_frame(reflector_in_base_[0], reflector_in_base_[1],reflector_in_base_[2]);
 				    	geometry_msgs::msg::PoseStamped pose;
 						pose.header = msg->header;
-						pose.pose.position.x = car_r[0];
-						pose.pose.position.y = car_r[1];
+						pose.pose.position.x = center_points_.x;
+						pose.pose.position.y = center_points_.y;
 						pose.pose.position.z = 0.0;
-				        pose.pose.orientation.z = std::sin(car_r[2] / 2);
-						pose.pose.orientation.w = std::cos(car_r[2] / 2);
+				        pose.pose.orientation.z = std::sin(normal_theta / 2);
+						pose.pose.orientation.w = std::cos(normal_theta / 2);
 
 						// 计算置信度
 						double confidence = std::min(1.0, 0.8 + 0.2 * (points.size() / 20.0)) * 
@@ -1132,15 +1222,44 @@ private:
             });
 
             best_pose = best_detection[0].pose;
+            best_pose_debug = best_detection[0].pose;
 
             double theta = 2 * std::atan2(best_pose.pose.orientation.z, best_pose.pose.orientation.w);
+            //outFile1<< best_pose.pose.position.x <<","<<best_pose.pose.position.y <<","<<theta<<std::endl;
+            Vector2d ori_ref(best_pose.pose.position.x,best_pose.pose.position.y);
+            std::vector<double> ori_coor;
+            ori_coor.push_back(ori_ref.x);
+            ori_coor.push_back(ori_ref.y);
+            ori_coor.push_back(theta);
+            best_pose_debug.pose.position.x = ori_coor[0];
+            best_pose_debug.pose.position.y = ori_coor[1];
+            best_pose_debug.pose.orientation.z = std::sin(ori_coor[2] / 2);
+			best_pose_debug.pose.orientation.w = std::cos(ori_coor[2] / 2);
+            //outFile2<< best_pose.pose.position.x <<","<<best_pose.pose.position.y <<","<<theta_result<<std::endl;
+            RCLCPP_INFO(this->get_logger(),
+                "发布时间滤波后结果debug：中心(%.3fm, %.3fm), 方向=%.3frad, 置信度=%.2f",
+                ori_coor[0], ori_coor[1], ori_coor[2], best_detection[0].confidence);
+            //std::vector<double> car_r = transformCarToReflectorFrame(ori_coor);
+            std::vector<double> car_r = transformCarToReflectorFrame_test(ori_coor);
+            /*Vector2d center_points_result =get_final_coor(ori_coor,theta);
+            std::vector reflector_in_base_ = transform_to_base_link(center_points_result.x, center_points_result.y, theta);
+            //转换为“小车在反光条坐标系中的位姿”
+            std::vector car_r = transform_to_reflector_frame(reflector_in_base_[0], reflector_in_base_[1],reflector_in_base_[2]);*/
+
+            best_pose.pose.position.x = car_r[0];
+            best_pose.pose.position.y = car_r[1];
+            best_pose.pose.orientation.z = std::sin(car_r[2] / 2);
+			best_pose.pose.orientation.w = std::cos(car_r[2] / 2);
+            double theta_result = 2 * std::atan2(best_pose.pose.orientation.z, best_pose.pose.orientation.w);
+            //outFile2<< best_pose.pose.position.x <<","<<best_pose.pose.position.y <<","<<theta_result<<std::endl;
             RCLCPP_INFO(this->get_logger(),
                 "发布时间滤波后结果：中心(%.3fm, %.3fm), 方向=%.3frad, 置信度=%.2f",
-                best_pose.pose.position.x, best_pose.pose.position.y, theta, best_detection[0].confidence);
+                best_pose.pose.position.x, best_pose.pose.position.y, theta_result, best_detection[0].confidence);
         } else {
             RCLCPP_DEBUG(this->get_logger(), "未检测到有效反光条");
         }
         publisher_->publish(best_pose);
+        publisher_debug->publish(best_pose_debug);
     }
 };
 
