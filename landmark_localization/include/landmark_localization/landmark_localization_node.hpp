@@ -45,7 +45,7 @@ private:
   std::string map_frame_;
   double matching_threshold_;
   bool publish_visualization_;
-  bool use_simulation_params_ = false; // Whether to use simulation parameters for the detector
+  int intensity_threshold_use = 1000; // Whether to use simulation parameters for the detector
   double tf_time_tolerance_ = 0.05; 
   
   // Prior landmarks from map

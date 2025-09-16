@@ -33,7 +33,7 @@ struct ReflectivePost {
 
 class ReflectivePostDetector {
 public:
-    ReflectivePostDetector(bool use_simulation_params = false);
+    ReflectivePostDetector(int intensity_threshold = 1000);
     ~ReflectivePostDetector();
 
     // Detect reflective posts from laser scan
@@ -42,20 +42,27 @@ public:
 private:
     // 参数声明
     int intensity_threshold_use = 1000;
-    double cluster_eps = 0.064;
+    double cluster_eps = 0.065;
     int min_cluster_points = 4;
-    double percentage_min = 0.2;
-    double percentage_max = 0.8;
+    double diameter_min = 0.05;
+    double diameter_max = 0.12;
+    double residual_avg_threshold = 0.01;
+    double residual_std_threshold = 0.005;
+    double residual_max_threshold = 0.02;
     int stat_mean_k = 4;
     double stat_std_threshold = 1.0;
     int max_history_age = 3;
     double match_distance_threshold = 0.1;
     double arc_threshold = 0.1;
+    double max_arc_feature = 30.0;
     int arc_min_points = 4;
+    // double direction_tolerance = 0.785;
     double residual_real = 0.032;
     double sensitivity = 2.0;
     double maxError = 1.0;
     double maxangleError = 0.1;
+    double landmark_rotation_weight = 1e2;
+    double landmark_translation_weight = 1.0;
 
     struct Detection
     {
@@ -83,6 +90,7 @@ private:
     : x(0), y(0) {}
     Vector2d(double x, double y)
     : x(x), y(y) {}
+
     Vector2d operator+(const Vector2d & other) const
     {
         return Vector2d(x + other.x, y + other.y);
@@ -109,124 +117,136 @@ private:
       return std::sqrt(x * x + y * y);
     }
     };
+
     double get_primary_direction(const std::vector<Vector2d> & points)
     {
         if (points.size() < 2) {return 0.0;}
 
-    // 计算均值
-    Vector2d mean;
-    for (const auto & p : points) {
-        mean += p;
-    }
-    mean = mean / static_cast<double>(points.size());
-
-    // 计算协方差矩阵
-    double cov_xx = 0.0, cov_xy = 0.0, cov_yy = 0.0;
-    for (const auto & p : points) {
-        Vector2d centered = {p.x - mean.x, p.y - mean.y};
-        cov_xx += centered.x * centered.x;
-        cov_xy += centered.x * centered.y;
-        cov_yy += centered.y * centered.y;
-    }
-
-    double n = static_cast<double>(points.size());
-    cov_xx /= n;
-    cov_xy /= n;
-    cov_yy /= n;
-
-    // 计算特征值和特征向量
-    double trace = cov_xx + cov_yy;
-    double determinant = cov_xx * cov_yy - cov_xy * cov_xy;
-
-    // 计算特征值
-    double eigenvalue1 = trace / 2.0 + std::sqrt(trace * trace / 4.0 - determinant);
-    //double eigenvalue2 = trace / 2.0 - std::sqrt(trace * trace / 4.0 - determinant);
-
-    // 计算主特征向量
-    Vector2d direction;
-    if (std::abs(cov_xy) > 1e-10) {
-        direction.x = eigenvalue1 - cov_yy;
-        direction.y = cov_xy;
-    } else {
-        if (cov_xx > cov_yy) {
-            direction.x = 1.0;
-            direction.y = 0.0;
-        } else {
-            direction.x = 0.0;
-            direction.y = 1.0;
+        // 计算均值
+        Vector2d mean;
+        for (const auto & p : points) {
+            mean += p;
         }
-    }
+        mean = mean / static_cast<double>(points.size());
 
-    // 归一化
-    double length = std::sqrt(direction.x * direction.x + direction.y * direction.y);
-    if (length > 1e-10) {
-        direction.x /= length;
-        direction.y /= length;
-    }
+        // 计算协方差矩阵
+        double cov_xx = 0.0, cov_xy = 0.0, cov_yy = 0.0;
+        for (const auto & p : points) {
+            Vector2d centered = {p.x - mean.x, p.y - mean.y};
+            cov_xx += centered.x * centered.x;
+            cov_xy += centered.x * centered.y;
+            cov_yy += centered.y * centered.y;
+        }
 
-    return std::atan2(direction.y, direction.x);
-    }
-    struct OrinParam
-    {
-        std::vector<Vector2d> points;
-        std::vector<float> high;
-        std::vector<Vector2d> param_;
-    };
-    // 统计离群点过滤
-    OrinParam statistical_outlier_filter(
-        const std::vector<Vector2d> & points,
-        std::vector<float> & high_intensities,
-        const std::vector<Vector2d> & param_ori)
-    {
-    OrinParam result;
-    result.points = points;
-    result.high = high_intensities;
-    result.param_ = param_ori;
-    if (points.size() < min_cluster_points) {return result;}
+        double n = static_cast<double>(points.size());
+        cov_xx /= n;
+        cov_xy /= n;
+        cov_yy /= n;
 
-    int mean_k = stat_mean_k;
-    double std_threshold = stat_std_threshold;
+        // 计算特征值和特征向量
+        double trace = cov_xx + cov_yy;
+        double determinant = cov_xx * cov_yy - cov_xy * cov_xy;
 
-    std::vector<double> mean_distances;
-    for (const auto & p : points) {
-        std::vector<double> distances;
-        for (const auto & other : points) {
-            if (&p != &other) {
-                    distances.push_back((p - other).norm());
+        // 计算特征值
+        double eigenvalue1 = trace / 2.0 + std::sqrt(trace * trace / 4.0 - determinant);
+        //double eigenvalue2 = trace / 2.0 - std::sqrt(trace * trace / 4.0 - determinant);
+
+        // 计算主特征向量
+        Vector2d direction;
+        if (std::abs(cov_xy) > 1e-10) {
+            direction.x = eigenvalue1 - cov_yy;
+            direction.y = cov_xy;
+        } else {
+            if (cov_xx > cov_yy) {
+                direction.x = 1.0;
+                direction.y = 0.0;
+            } else {
+                direction.x = 0.0;
+                direction.y = 1.0;
             }
         }
-        std::sort(distances.begin(), distances.end());
-        double mean_dist = 0.0;
-        int count = std::min(mean_k, static_cast<int>(distances.size()));
-        for (int i = 0; i < count; ++i) {
-            mean_dist += distances[i];
+
+        // 归一化
+        double length = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+        if (length > 1e-10) {
+            direction.x /= length;
+            direction.y /= length;
         }
-        mean_dist /= count;
-        mean_distances.push_back(mean_dist);
+
+        return std::atan2(direction.y, direction.x);
+    }
+    Vector2d get_final_coor(Vector2d points, double angle)
+    {
+        double final_x = -std::cos(angle) * points.x - std::sin(angle) * points.y;
+        double final_y = std::sin(angle) * points.x - std::cos(angle) * points.y;
+        return Vector2d(final_x, final_y);
     }
 
-    double mean =
-      std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
+    // 统计离群点过滤
+    std::vector<Vector2d> statistical_outlier_filter(const std::vector<Vector2d> & points)
+    {
+        if (points.size() < 4) {return points;}
+
+        int mean_k = stat_mean_k;
+        double std_threshold = stat_std_threshold;
+
+        std::vector<double> mean_distances;
+        for (const auto & p : points) {
+            std::vector<double> distances;
+            for (const auto & other : points) {
+                if (&p != &other) {
+                        distances.push_back((p - other).norm());
+                }
+            }
+            std::sort(distances.begin(), distances.end());
+            double mean_dist = 0.0;
+            int count = std::min(mean_k, static_cast<int>(distances.size()));
+            for (int i = 0; i < count; ++i) {
+                mean_dist += distances[i];
+            }
+            mean_dist /= count;
+            mean_distances.push_back(mean_dist);
+        }
+
+        double mean =
+            std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
         double std_dev = 0.0;
         for (double d : mean_distances) {
             std_dev += (d - mean) * (d - mean);
         }
         std_dev = sqrt(std_dev / mean_distances.size());
 
-        std::vector<Vector2d> filtered, filtered_params;
-        std::vector<float> filtered_high;
+        std::vector<Vector2d> filtered;
         for (size_t i = 0; i < points.size(); ++i) {
             if (mean_distances[i] < mean + std_threshold * std_dev) {
                 filtered.push_back(points[i]);
-                filtered_high.push_back(high_intensities[i]);
-                filtered_params.push_back(param_ori[i]);
-            }   
+            }
         }
-    
-        result.points = filtered;
-        result.high = filtered_high;
-        result.param_ = filtered_params;
-        return result;
+        return filtered;
+    }
+    // 计算两点之间的欧氏距离
+    double distanceTo(const Vector2d & current_points, const Vector2d & other)
+    {
+        double dx = current_points.x - other.x;
+        double dy = current_points.y - other.y;
+        return std::sqrt(dx * dx + dy * dy);
+    }
+    double calculateTranslationWeight(const Vector2d & current_points, const Vector2d & true_points)
+    {
+        double error = distanceTo(current_points, true_points);
+        double weigth_ = std::exp(-sensitivity * error / maxError);
+        return weigth_;
+    }
+  double calculateRotationWeight(const Vector2d & current_points, const Vector2d & true_points)
+  {
+    double currentAngle = std::atan2(-current_points.y, -current_points.x);
+    double realAngle = std::atan2(-true_points.y, -true_points.x);
+    double angleDiff = std::abs(realAngle - currentAngle);
+    if (angleDiff > M_PI) {
+      angleDiff = 2 * M_PI - angleDiff;
+    }
+    double weigth_ = std::exp(-sensitivity * angleDiff / maxangleError);
+    return weigth_;
     }
     // 计算点集的 k 近邻距离
     std::vector<double> compute_knn_distances(const std::vector<Vector2d> & points, int k)
@@ -365,30 +385,7 @@ private:
         // 执行 DBSCAN 聚类
         return dbscan(points, eps, min_cluster_points);
     }
-    // 计算两点之间的欧氏距离
-    double distanceTo(const Vector2d & current_points, const Vector2d & other)
-    {
-        double dx = current_points.x - other.x;
-        double dy = current_points.y - other.y;
-        return std::sqrt(dx * dx + dy * dy);
-    }
-    double calculateTranslationWeight(const Vector2d & current_points, const Vector2d & true_points)
-    {
-        double error = distanceTo(current_points, true_points);
-        double weigth_ = std::exp(-sensitivity * error / maxError);
-    	return weigth_;
-    }
-    double calculateRotationWeight(const Vector2d & current_points, const Vector2d & true_points)
-    {
-        double currentAngle = std::atan2(-current_points.y, -current_points.x);
-        double realAngle = std::atan2(-true_points.y, -true_points.x);
-        double angleDiff = std::abs(realAngle - currentAngle);
-        if (angleDiff > M_PI) {
-            angleDiff = 2 * M_PI - angleDiff;
-    	}
-        double weigth_ = std::exp(-sensitivity * angleDiff / maxangleError);
-    	return weigth_;
-    }
+
     // 圆拟合结果结构体
     struct CircleFitResult
     {
@@ -599,11 +596,6 @@ private:
         }
         return Vector2d(mean_x, mean_y);
     }
-    int findMaxIndexStd(std::vector<float> & arr)
-    {
-        auto max_it = std::max_element(arr.begin(), arr.end());
-        return std::distance(arr.begin(), max_it);
-    }
     CircleFitResult circle_fit(const std::vector<Vector2d> & points)
     {
         CircleFitResult result;
@@ -782,6 +774,17 @@ private:
     //RCLCPP_INFO(this->get_logger(), "info arc: %f,%f", mean_curvature,std_curvature);
         return mean_curvature / (std_curvature + 1e-6);
     }
+
+  // 判断方向是否朝向雷达
+  bool is_direction_towards_radar(
+    double direction_theta, double center_x, double center_y,
+    double tolerance = 0.785)
+  {
+    double towards_radar_theta = std::atan2(-center_y, -center_x);
+    double angle_diff = std::abs(direction_theta - towards_radar_theta);
+    angle_diff = std::min(angle_diff, 2 * M_PI - angle_diff);
+    return angle_diff < tolerance;
+  }
 
     // 计算点集的均值
     Vector2d compute_mean(const std::vector<Vector2d> & points)

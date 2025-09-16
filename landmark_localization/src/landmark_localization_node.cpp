@@ -20,7 +20,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("map_frame", "map");
   this->declare_parameter("matching_threshold", 0.5);
   this->declare_parameter("publish_visualization", true);
-  this->declare_parameter("use_simulation_params", false);
+  this->declare_parameter("intensity_threshold_use", 1000);
   this->declare_parameter("tf_time_tolerance", 0.05);
   this->declare_parameter("scan_topic", "/scan");
   this->declare_parameter("landmark_topic", "/landmark");
@@ -32,7 +32,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   map_frame_ = this->get_parameter("map_frame").as_string();
   matching_threshold_ = this->get_parameter("matching_threshold").as_double();
   publish_visualization_ = this->get_parameter("publish_visualization").as_bool();
-  use_simulation_params_ = this->get_parameter("use_simulation_params").as_bool();
+  intensity_threshold_use = this->get_parameter("intensity_threshold_use").as_int();
   tf_time_tolerance_ = this->get_parameter("tf_time_tolerance").as_double();
   std::string scan_topic = this->get_parameter("scan_topic").as_string();
   std::string landmark_topic = this->get_parameter("landmark_topic").as_string();
@@ -45,7 +45,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   // Initialize components
   landmark_reader_ = std::make_shared<LandmarkReader>(pbstream_file_);
   landmark_matcher_ = std::make_shared<LandmarkMatcher>(matching_threshold_);
-  post_detector_ = std::make_shared<ReflectivePostDetector>(use_simulation_params_);
+  post_detector_ = std::make_shared<ReflectivePostDetector>(intensity_threshold_use);
 
   // Load prior landmarks from map
   loadPriorLandmarks();
@@ -225,8 +225,8 @@ void LandmarkLocalizationNode::publishLandmarks(const std::vector<Landmark>& mat
     entry.tracking_from_landmark_transform.orientation.z = 0.0;
     
     // Set weights
-    entry.translation_weight = landmark.translation_weight  * 1e6;
-    entry.rotation_weight = 1e5;
+    entry.translation_weight = landmark.translation_weight;
+    entry.rotation_weight = landmark.rotation_weight;
     
     landmark_list.landmarks.push_back(entry);
   }

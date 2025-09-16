@@ -38,6 +38,12 @@ def generate_launch_description():
         default_value='laser',
         description='Frame ID for the LiDAR, e.g., laser, two_d_lidar'
     )
+
+    intensity_threshold_use_arg = DeclareLaunchArgument(
+        'intensity_threshold_use',
+        default_value='1600',
+        description='强度阈值'
+    )
     
     # Get the package share directory
     pkg_share = get_package_share_directory('landmark_localization')
@@ -57,7 +63,7 @@ def generate_launch_description():
             'landmark_topic': '/landmark', # cartographer_ros_msgs/msg/LandmarkList
             'publish_visualization': True, # Whether to publish visualization markers
             'visualization_topic': '/landmark_localization_markers', # visualization_msgs/msg/MarkerArray
-            'use_simulation_params': False,  # Whether to use simulation parameters for the detector
+            'intensity_threshold_use': LaunchConfiguration('intensity_threshold_use'),
             'tf_time_tolerance': LaunchConfiguration('tf_time_tolerance'), 
         }]
     )
@@ -68,5 +74,6 @@ def generate_launch_description():
         matching_threshold_arg,
         tf_time_tolerance_arg,
         lidar_frame_arg,
+        intensity_threshold_use_arg,
         landmark_localization_node
     ])

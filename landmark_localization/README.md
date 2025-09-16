@@ -16,7 +16,8 @@ ros2 launch landmark_localization landmark_localization.launch.py \
   scan_topic:=/your/scan/topic \
   lidar_frame:=your_lidar_frame \
   matching_threshold:= your_matching_threshold \
-  tf_time_tolerance:= your_tf_time_tolerance
+  tf_time_tolerance:= your_tf_time_tolerance \
+  intensity_threshold_use:= your_intensity_threshold_use
 ```
 
 ## 功能特性
