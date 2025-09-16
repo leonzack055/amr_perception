@@ -22,10 +22,8 @@
 
 using namespace std::chrono_literals;
 
-std::ofstream outFile1("./test_cpp_circle_1.txt");
-std::ofstream outFile2("./test_cpp_circle_2.txt");
-std::ofstream outFile3("./test_cpp_circle_3.txt");
-std::ofstream outFile4("./test_cpp_circle_4.txt");
+/*std::ofstream outFile1("./test_cpp_circle_1.txt");
+std::ofstream outFile2("./test_cpp_circle_2.txt");*/
 
 class ReflectorDetector : public rclcpp::Node
 {

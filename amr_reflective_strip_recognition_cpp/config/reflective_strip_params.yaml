@@ -1,0 +1,22 @@
+#config/reflective_strip_params.yaml
+reflector_detector_node:
+  ros__parameters:
+    intensity_threshold_use: 2000
+    cluster_eps: 0.1
+    min_cluster_points: 10
+    diameter_min: 0.09
+    diameter_max: 0.11
+    residual_avg_threshold: 0.01
+    residual_std_threshold: 0.005
+    residual_max_threshold: 0.02
+    stat_mean_k: 5
+    stat_std_threshold: 1.0
+    max_history_age: 3
+    match_distance_threshold: 0.1
+    arc_threshold: 0.1
+    max_arc_feature: 8.0
+    arc_min_points: 8
+    direction_tolerance: 0.785
+    lidar_to_base_tx: 0.35  # 激光雷达在基座x方向偏移
+    lidar_to_base_ty: 0.00  # 激光雷达在基座y方向偏移
+    lidar_to_base_rz: 3.1415926  # 激光雷达旋转偏移
