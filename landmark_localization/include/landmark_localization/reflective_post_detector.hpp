@@ -33,7 +33,7 @@ struct ReflectivePost {
 
 class ReflectivePostDetector {
 public:
-    ReflectivePostDetector(int intensity_threshold = 1000);
+    ReflectivePostDetector(int intensity_threshold = 1600);
     ~ReflectivePostDetector();
 
     // Detect reflective posts from laser scan
@@ -41,11 +41,11 @@ public:
 
 private:
     // 参数声明
-    int intensity_threshold_use = 1000;
-    double cluster_eps = 0.065;
-    int min_cluster_points = 4;
+    int intensity_threshold_use = 1600;
+    double cluster_eps = 0.064;
+    int min_cluster_points = 12;
     double diameter_min = 0.05;
-    double diameter_max = 0.12;
+    double diameter_max = 0.15;
     double residual_avg_threshold = 0.01;
     double residual_std_threshold = 0.005;
     double residual_max_threshold = 0.02;
@@ -55,14 +55,14 @@ private:
     double match_distance_threshold = 0.1;
     double arc_threshold = 0.1;
     double max_arc_feature = 30.0;
-    int arc_min_points = 4;
+    int arc_min_points = 10;
     // double direction_tolerance = 0.785;
     double residual_real = 0.032;
     double sensitivity = 2.0;
     double maxError = 1.0;
     double maxangleError = 0.1;
     double landmark_rotation_weight = 1e2;
-    double landmark_translation_weight = 1.0;
+    double landmark_translation_weight = 1e5;
 
     struct Detection
     {
