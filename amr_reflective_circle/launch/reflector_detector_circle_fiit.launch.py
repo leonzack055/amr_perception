@@ -8,7 +8,7 @@ def generate_launch_description():
     # 声明launch参数
     intensity_threshold_use_arg = DeclareLaunchArgument(
         'intensity_threshold_use',
-        default_value='1500',
+        default_value='1600',
         description='强度阈值'
     )
     
@@ -85,9 +85,9 @@ def generate_launch_description():
             "landmark_rotation_weight": LaunchConfiguration('landmark_rotation_weight'),
             "landmark_translation_weight": LaunchConfiguration('landmark_translation_weight'),
         }],
-        remappings=[
-            ('scan', '/scan/front'),
-        ]
+        # remappings=[
+        #     ('scan', '/scan/front'),
+        # ]
     )
 
     return LaunchDescription([
