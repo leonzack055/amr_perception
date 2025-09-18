@@ -17,7 +17,7 @@ def generate_launch_description():
 
     scan_topic_arg = DeclareLaunchArgument(
         'scan_topic',
-        default_value='/scan',
+        default_value='/scan/front',
         description='Topic for the laser scan data'
     )
 
@@ -41,7 +41,7 @@ def generate_launch_description():
 
     intensity_threshold_use_arg = DeclareLaunchArgument(
         'intensity_threshold_use',
-        default_value='1600',
+        default_value='200',
         description='强度阈值'
     )
     
