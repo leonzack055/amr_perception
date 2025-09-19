@@ -126,8 +126,19 @@ void LandmarkLocalizationNode::laserScanCallback(const sensor_msgs::msg::LaserSc
         tf2::durationFromSec(tf_time_tolerance_) // 时间容忍度, unit: s
     );
 
+    // Convert ROS LaserScan to standard library LaserScan
+    LaserScan scan;
+    scan.ranges = msg->ranges;
+    scan.intensities = msg->intensities;
+    scan.angle_min = msg->angle_min;
+    scan.angle_max = msg->angle_max;
+    scan.angle_increment = msg->angle_increment;
+    scan.scan_time = msg->scan_time;
+    scan.range_min = msg->range_min;
+    scan.range_max = msg->range_max;
+    
     // Detect reflective posts in laser scan
-    auto detected_posts = post_detector_->detect(msg);
+    auto detected_posts = post_detector_->detect(scan);
     
     if (detected_posts.empty()) {
       std::cout << "未检测到有效反光柱" << std::endl;

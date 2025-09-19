@@ -1,10 +1,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(landmark_localization)
 
-# Default to C++14
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14)
-endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -51,14 +49,13 @@ ament_target_dependencies(landmark_matcher
   rclcpp
 )
 
-# Reflective post detector library
+# Reflective post detector library (standard library version, no ROS dependencies)
 add_library(reflective_post_detector
   src/reflective_post_detector.cpp
 )
-ament_target_dependencies(reflective_post_detector
-  rclcpp
-  sensor_msgs
-  geometry_msgs
+target_include_directories(reflective_post_detector PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include>"
 )
 
 # Main node

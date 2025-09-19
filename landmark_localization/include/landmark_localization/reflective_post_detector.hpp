@@ -1,10 +1,6 @@
 #pragma once
 
 #include <vector>
-#include <geometry_msgs/msg/point.hpp>
-#include <sensor_msgs/msg/laser_scan.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <geometry_msgs/msg/pose.hpp>
 #include <memory>
 #include <algorithm>
 #include <cmath>
@@ -25,10 +21,40 @@
 
 namespace landmark_localization {
 
+// 纯 C++ 数据结构，替代 ROS 类型
+struct LaserScan
+{
+    std::string header = "";
+    std::vector<float> ranges;
+    std::vector<float> intensities;
+    float angle_min = 0.0f;
+    float angle_max = 0.0f;
+    float angle_increment = 0.0f;
+    
+    float time_increment = 0.0f;
+    float scan_time = 0.0f;
+
+    float range_min = 0.0f;
+    float range_max = 0.0f;
+};
+
+struct PoseStamped
+{
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0; 
+    double o_x = 0.0;
+    double o_y = 0.0;
+    double o_z = 0.0; 
+    double o_w = 0.0;
+    std::string header = "";
+
+};
+
 struct ReflectivePost {
-    geometry_msgs::msg::Point position; // In lidar frame
-    double translation_weight;
-    double rotation_weight;
+    struct { double x = 0.0; double y = 0.0; double z = 0.0; } position; // In lidar frame
+    double translation_weight = 0.0;
+    double rotation_weight = 0.0;
 };
 
 class ReflectivePostDetector {
@@ -36,8 +62,8 @@ public:
     ReflectivePostDetector(int intensity_threshold = 1600);
     ~ReflectivePostDetector();
 
-    // Detect reflective posts from laser scan
-    std::vector<ReflectivePost> detect(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+    // Detect reflective posts from laser scan (非 ROS 环境可直接调用)
+    std::vector<ReflectivePost> detect(const LaserScan & scan);
 
 private:
     // 参数声明
@@ -66,14 +92,14 @@ private:
 
     struct Detection
     {
-        geometry_msgs::msg::PoseStamped pose;
+        PoseStamped pose;
         double diameter;
         double confidence;
         double translationW;
         double rotationW;
     };
     struct HistoryEntry {
-        geometry_msgs::msg::PoseStamped pose;
+        PoseStamped pose;
         double diameter;
         double confidence;
         double translationW;
@@ -805,18 +831,17 @@ private:
     using DetectionHash = std::tuple<double, double, double, double, double, double, double, double>;
     // 创建检测哈希
     DetectionHash createDetectionHash(const Detection & detection)
-    {
-        const auto & pos = detection.pose.pose.position;
-        const auto & ori = detection.pose.pose.orientation;
+    {        
+        const auto & pos = detection.pose;
         
         return std::make_tuple(
             roundTo(pos.x, 4),
             roundTo(pos.y, 4),
             roundTo(pos.z, 4),
-            roundTo(ori.x, 4),
-            roundTo(ori.y, 4),
-            roundTo(ori.z, 4),
-            roundTo(ori.w, 4),
+            roundTo(pos.o_x, 4),
+            roundTo(pos.o_y, 4),
+            roundTo(pos.o_z, 4),
+            roundTo(pos.o_w, 4),
             roundTo(detection.diameter, 4)
         );
     }
@@ -863,17 +888,17 @@ private:
         for (const auto & detection : current_detections) {
             auto current_hash = createDetectionHash(detection);
             Point current_pos;
-            current_pos.x = detection.pose.pose.position.x;
-            current_pos.y = detection.pose.pose.position.y;
-            current_pos.z = detection.pose.pose.position.z;
+            current_pos.x = detection.pose.x;
+            current_pos.y = detection.pose.y;
+            current_pos.z = detection.pose.z;
             std::pair<int, HistoryEntry> best_match;
             double min_distance = std::numeric_limits<double>::max();
             
             for (const auto & [hist_hash, hist_info] : hist_hashes) {
                 Point hist_pos;
-                hist_pos.x = hist_info.second.pose.pose.position.x;
-                hist_pos.y = hist_info.second.pose.pose.position.y;
-                hist_pos.z = hist_info.second.pose.pose.position.z;
+                hist_pos.x = hist_info.second.pose.x;
+                hist_pos.y = hist_info.second.pose.y;
+                hist_pos.z = detection.pose.z;
                 double distance = current_pos.distanceTo(hist_pos);
                 
                 if (distance < min_distance && distance < match_distance_threshold_) {
@@ -929,32 +954,29 @@ private:
     };
 
     // 融合两个位姿
-    geometry_msgs::msg::PoseStamped fusePoses(
-        const geometry_msgs::msg::PoseStamped & pose1,
-        const geometry_msgs::msg::PoseStamped & pose2,
+    PoseStamped fusePoses(
+        const PoseStamped & pose1,
+        const PoseStamped & pose2,
         double weight1, double weight2)
     {
-        geometry_msgs::msg::PoseStamped fused_pose;
+        PoseStamped fused_pose;
         double total_weight = weight1 + weight2;
-        
-        // 融合位置
-        fused_pose.pose.position.x =
-        (pose1.pose.position.x * weight1 + pose2.pose.position.x * weight2) / total_weight;
-        fused_pose.pose.position.y =
-        (pose1.pose.position.y * weight1 + pose2.pose.position.y * weight2) / total_weight;
-        fused_pose.pose.position.z = 0.0;     // 假设z坐标为0
-        
+        // if (total_weight <= 0.0) { return fused_pose; }
+
+        fused_pose.x = (pose1.x * weight1 + pose2.x * weight2) / total_weight;
+        fused_pose.y = (pose1.y * weight1 + pose2.y * weight2) / total_weight;
+        fused_pose.z = 0.0;  
         // 融合方向（四元数）
         Quaternion q1;
-        q1.x = pose1.pose.orientation.x;
-        q1.y = pose1.pose.orientation.y;
-        q1.z = pose1.pose.orientation.z;
-        q1.w = pose1.pose.orientation.w;
+        q1.x = pose1.o_x;
+        q1.y = pose1.o_y;
+        q1.z = pose1.o_z;
+        q1.w = pose1.o_w;
         Quaternion q2;
-        q2.x = pose2.pose.orientation.x;
-        q2.y = pose2.pose.orientation.y;
-        q2.z = pose2.pose.orientation.z;
-        q2.w = pose2.pose.orientation.w;
+        q2.x = pose2.o_x;
+        q2.y = pose2.o_y;
+        q2.z = pose2.o_z;
+        q2.w = pose2.o_w;
         // 确保四元数在同一半球
         if (q1.dot(q2) < 0) {
             q2 = Quaternion(-q2.x, -q2.y, -q2.z, -q2.w);
@@ -963,11 +985,11 @@ private:
         // 球面线性插值
         double t = weight1 / total_weight;
         Quaternion q_fused = (q1 * t + q2 * (1.0 - t)).normalized();
-        fused_pose.pose.orientation.x = q_fused.x;
-        fused_pose.pose.orientation.y = q_fused.y;
-        fused_pose.pose.orientation.z = q_fused.z;
-        fused_pose.pose.orientation.w = q_fused.w;
-        
+        fused_pose.o_x = q_fused.x;
+        fused_pose.o_y = q_fused.y;
+        fused_pose.o_z = q_fused.z;
+        fused_pose.o_w = q_fused.w;
+
         return fused_pose;
     }
     std::vector<Detection> updateTemporalFilter(const std::vector<Detection> & current_detections)
@@ -1002,7 +1024,7 @@ private:
                 int hist_id = match_info.first;
                 const auto & hist_data = match_info.second;
                 
-                geometry_msgs::msg::PoseStamped fused_pose = fusePoses(
+                PoseStamped fused_pose = fusePoses(
                     detection.pose,
                     hist_data.pose,
                     detection.confidence,
