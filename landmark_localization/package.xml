@@ -9,10 +9,12 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_auto</buildtool_depend>
+  <exec_depend>ament_cmake</exec_depend>
 
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>tf2</depend>
+  <depend>tf2_eigen</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>sensor_msgs</depend>
@@ -21,6 +23,8 @@
   <depend>cartographer_ros_msgs</depend>
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
+  <depend>eigen</depend>
+  <depend>libabsl-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
