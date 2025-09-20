@@ -44,6 +44,12 @@ def generate_launch_description():
         default_value='200',
         description='强度阈值'
     )
+
+    min_landmarks_for_pose_arg = DeclareLaunchArgument(
+        'min_landmarks_for_pose',
+        default_value='3',
+        description='Minimum number of matched landmarks required to compute robot pose'
+    )
     
     # Get the package share directory
     pkg_share = get_package_share_directory('landmark_localization')
@@ -65,6 +71,7 @@ def generate_launch_description():
             'visualization_topic': '/landmark_localization_markers', # visualization_msgs/msg/MarkerArray
             'intensity_threshold_use': LaunchConfiguration('intensity_threshold_use'),
             'tf_time_tolerance': LaunchConfiguration('tf_time_tolerance'), 
+            'min_landmarks_for_pose': LaunchConfiguration('min_landmarks_for_pose')
         }]
     )
     
@@ -75,5 +82,6 @@ def generate_launch_description():
         tf_time_tolerance_arg,
         lidar_frame_arg,
         intensity_threshold_use_arg,
+        min_landmarks_for_pose_arg,
         landmark_localization_node
     ])
