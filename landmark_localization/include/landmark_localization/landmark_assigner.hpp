@@ -36,13 +36,14 @@ public:
   // 获取当前的检测到相对于激光坐标系下的landmarks的在map系下的全局位姿
   std::vector<Detection> getGlobalDetections(
     const std::vector<Detection> & current_detections);
-  // 进行历史landmark_id匹配并分配新的id
+  // 进行历史landmark_id匹配并分配新的id, 反光激光坐标系下的landmark位姿坐标
   std::vector<ReflectorBar> assignLandmarkToReflectorBar(
     const std::vector<Detection> & current_detections);
   // 新增：修正检测方向，以global下的Identity进行矫正
   Eigen::Quaterniond CorrectOrientationToLaser();
   // 检查是否tf己经开启，并且当前trackted_pose与landmark检测时间不超过300ms
   bool isLandmarkDetectorOK(int64_t detect_timestamp) const;
+  bool isBase2LaserTransOK() const {return base_to_laser_transform_available_;}
 
   // 处理landmark检测的消息
   void update_landmarks(
@@ -65,14 +66,19 @@ public:
   LandmarkAssigner & setBase2LaserTrans(
     const transforms::Rigid3d & transform)
   {
-    base_to_laser_transform_ = transform; 
+    base_to_laser_transform_ = transform;
     base_to_laser_transform_available_ = true;
     return *this;
   }
   // 更新当前tracked_pose全局位姿的时间，以保证其连续可用
   void update_tracked_pose(const transforms::Rigid3d & pose, int64_t time_ns);
 
-  const ReflectorBarMap & getReflectorBars() {return reflector_bars_;}
+  const ReflectorBarMap & getReflectorBars()
+  {
+    std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
+    auto reflector_bars = reflector_bars_;
+    return reflector_bars;
+  }
 
 protected:
   bool time_check(int64_t time1, int64_t time2, double threshold) const;

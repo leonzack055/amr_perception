@@ -18,7 +18,7 @@
 #include <queue>
 #include <unordered_set>
 #include <map>
-#include "landmark_localization/common/reflector_common.hpp"
+#include "common/reflector_common.hpp"
 namespace landmark_localization
 {
 
@@ -33,7 +33,7 @@ struct LaserScan
   float angle_increment = 0.0f;
 
   float time_increment = 0.0f;
-  float scan_time = 0.0f;
+  float scan_time = 0.0f; // 这个scan_time表示什么？
 
   float range_min = 0.0f;
   float range_max = 0.0f;
@@ -47,8 +47,9 @@ public:
 
   // Detect reflective posts from laser scan (非 ROS 环境可直接调用)
   std::vector<ReflectivePost> detect(const LaserScan & scan);
+  std::vector<Detection> detect_circles(const LaserScan & scan);
 
-private:
+
   // 参数声明
   int intensity_threshold_use = 1600;
   double cluster_eps = 0.064;
@@ -73,6 +74,7 @@ private:
   double landmark_rotation_weight = 1e2;
   double landmark_translation_weight = 1e5;
 
+private:
   // 定义基本数据结构
   struct Point
   {
@@ -568,7 +570,7 @@ private:
 
     return x;
   }
-  
+
   /// @brief  与真实圆拟合，使用最梯度下降法，计算圆的中心和半径，以半径优化
   /// @param points  输入点集， 使用成员变量residual_real 表示实际反光柱半径
   /// @return  圆拟合结果，包含中心和半径

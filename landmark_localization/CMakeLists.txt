@@ -55,7 +55,7 @@ ament_target_dependencies(landmark_matcher
 include_directories(${EIGEN3_INCLUDE_DIR})
 # Landmark assigner library
 add_library(landmark_assigner
-  src/landmark_assigner.cpp
+  src/landmark_assigner.cpp src/common/msg_conversion.cpp
 )
 
 target_include_directories(landmark_assigner PRIVATE
@@ -70,6 +70,15 @@ target_link_libraries(landmark_assigner PRIVATE
   ${EIGEN3_LIBRARIES}
   absl::memory
   absl::synchronization
+  rclcpp::rclcpp
+  ${builtin_interfaces_TARGETS}
+  ${cartographer_ros_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${nav_msgs_TARGETS}
+  ${sensor_msgs_TARGETS}
+  ${visualization_msgs_TARGETS}
+  tf2::tf2
+  tf2_ros::tf2_ros
 )
 
 # Reflective post detector library (standard library version, no ROS dependencies)

@@ -109,7 +109,7 @@ void LandmarkAssigner::update_landmarks(
 {
   for (const auto & landmark_marker: landmarks) {
     // 处理反光柱位姿
-    std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
+    // std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
     Eigen::Quaterniond g_orientation = Eigen::Quaterniond(
       landmark_marker.second.rotation().w(), landmark_marker.second.rotation().x(),
       landmark_marker.second.rotation().y(), landmark_marker.second.rotation().z());
@@ -169,7 +169,7 @@ std::vector<Detection> LandmarkAssigner::getGlobalDetections(
 std::vector<ReflectorBar> LandmarkAssigner::assignLandmarkToReflectorBar(
   const std::vector<Detection> & current_detections)
 {
-  std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
+  // std::lock_guard<std::mutex> lock(reflector_bars_mutex_);
   // 1. 转化为全局坐标系下的位姿
   std::vector<Detection> global_detections =
     getGlobalDetections(current_detections);
