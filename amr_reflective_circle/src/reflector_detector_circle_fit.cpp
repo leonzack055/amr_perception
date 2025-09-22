@@ -32,7 +32,6 @@
 #include "landmark_localization/reflective_post_detector.hpp"
 #include "landmark_localization/landmark_assigner.hpp"
 #include "landmark_localization/common/msg_conversion.hpp"
-#include "match_assigner.hpp"
 
 using namespace std::chrono_literals;
 
