@@ -31,7 +31,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("scan_topic", "/scan");
   this->declare_parameter("landmark_topic", "/landmark");
   this->declare_parameter("visualization_topic", "/landmark_localization_markers");
-  this->declare_parameter("landmark_localization_topic", "/landmark_tracked_pose");
+  this->declare_parameter("landmark_localization_topic", "/global_pose_qr");
   
   // Get parameters
   pbstream_file_ = this->get_parameter("pbstream_file").as_string();
