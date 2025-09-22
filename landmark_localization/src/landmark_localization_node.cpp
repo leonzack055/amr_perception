@@ -7,6 +7,10 @@
 #include <chrono>
 #include <memory>
 
+#include <geometry_msgs/msg/pose_stamped.hpp> 
+#include <Eigen/Dense> 
+#include <Eigen/Geometry>
+
 namespace landmark_localization {
 
 using namespace std::chrono_literals;
@@ -22,9 +26,12 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("publish_visualization", true);
   this->declare_parameter("intensity_threshold_use", 1000);
   this->declare_parameter("tf_time_tolerance", 0.05);
+  this->declare_parameter("base_frame", "base_link");
+  this->declare_parameter("min_landmarks_for_pose", 3);
   this->declare_parameter("scan_topic", "/scan");
   this->declare_parameter("landmark_topic", "/landmark");
   this->declare_parameter("visualization_topic", "/landmark_localization_markers");
+  this->declare_parameter("landmark_localization_topic", "/landmark_tracked_pose");
   
   // Get parameters
   pbstream_file_ = this->get_parameter("pbstream_file").as_string();
@@ -34,13 +41,43 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   publish_visualization_ = this->get_parameter("publish_visualization").as_bool();
   intensity_threshold_use = this->get_parameter("intensity_threshold_use").as_int();
   tf_time_tolerance_ = this->get_parameter("tf_time_tolerance").as_double();
+  base_frame_ = this->get_parameter("base_frame").as_string();
+  min_landmarks_for_pose_ = this->get_parameter("min_landmarks_for_pose").as_int();
   std::string scan_topic = this->get_parameter("scan_topic").as_string();
   std::string landmark_topic = this->get_parameter("landmark_topic").as_string();
   std::string visualization_topic = this->get_parameter("visualization_topic").as_string();
-  
+  std::string landmark_localization_topic = this->get_parameter("landmark_localization_topic").as_string();
+
   // Initialize TF2
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+  // 在初始化时获取静态TF变换
+  try {
+    geometry_msgs::msg::TransformStamped base_to_lidar_tf_msg = tf_buffer_->lookupTransform(
+        base_frame_, lidar_frame_, tf2::TimePointZero);
+    
+    tf2::fromMsg(base_to_lidar_tf_msg.transform, base_to_lidar_tf_);
+    has_base_to_lidar_tf_ = true;
+    
+    RCLCPP_INFO(this->get_logger(), "Successfully loaded static TF from %s to %s", 
+               base_frame_.c_str(), lidar_frame_.c_str());
+    
+    // 输出TF变换信息用于调试
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(base_to_lidar_tf_.getRotation()).getRPY(roll, pitch, yaw);
+    RCLCPP_INFO(this->get_logger(), "TF translation: x=%.3f, y=%.3f, z=%.3f",
+               base_to_lidar_tf_.getOrigin().x(),
+               base_to_lidar_tf_.getOrigin().y(),
+               base_to_lidar_tf_.getOrigin().z());
+    RCLCPP_INFO(this->get_logger(), "TF rotation: roll=%.3f, pitch=%.3f, yaw=%.3f",
+               roll, pitch, yaw);
+               
+  } catch (tf2::TransformException &ex) {
+    RCLCPP_WARN(this->get_logger(), "Could not transform %s to %s: %s", 
+               base_frame_.c_str(), lidar_frame_.c_str(), ex.what());
+    RCLCPP_WARN(this->get_logger(), "Will try to get TF transform in each callback");
+  }
   
   // Initialize components
   landmark_reader_ = std::make_shared<LandmarkReader>(pbstream_file_);
@@ -57,6 +94,9 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   
   landmark_pub_ = this->create_publisher<cartographer_ros_msgs::msg::LandmarkList>(
     landmark_topic, 10);
+  
+  pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+    landmark_localization_topic, 10);
   
   if (publish_visualization_) {
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -179,6 +219,8 @@ void LandmarkLocalizationNode::laserScanCallback(const sensor_msgs::msg::LaserSc
 
     // Prepare matched landmarks for publishing
     std::vector<Landmark> matched_landmarks;
+    std::vector<LandmarkInfo> matched_prior_landmarks;  // 存储匹配的先验地标
+    
     for (size_t i = 0; i < detected_landmarks.size(); ++i) {
       if (matched_ids[i] != -1) {
         // Find the corresponding prior landmark
@@ -189,6 +231,7 @@ void LandmarkLocalizationNode::laserScanCallback(const sensor_msgs::msg::LaserSc
               matched_landmarks.back().id = matched_ids[i]; // Set matched ID
               matched_landmarks.back().x = detected_posts[i].position.x; // Set position x in lidar frame
               matched_landmarks.back().y = detected_posts[i].position.y; // Set position y in lidar frame
+              matched_prior_landmarks.push_back(prior);  // 保存对应的先验地标
               break;
             }
           } catch (const std::exception& e) {
@@ -204,6 +247,15 @@ void LandmarkLocalizationNode::laserScanCallback(const sensor_msgs::msg::LaserSc
       
       if (publish_visualization_) {
         publishVisualizationMarkers(matched_landmarks, msg->header.stamp);
+      }
+      
+      // 计算并发布小车位姿
+      geometry_msgs::msg::PoseStamped robot_pose;
+      if (calculateRobotPose(matched_prior_landmarks, matched_landmarks, robot_pose)) {
+        robot_pose.header.stamp = msg->header.stamp;
+        robot_pose.header.frame_id = map_frame_;
+        pose_pub_->publish(robot_pose);
+        RCLCPP_INFO(this->get_logger(), "Published robot pose in map frame");
       }
       
       RCLCPP_INFO(this->get_logger(), "Published %zu matched landmarks", matched_landmarks.size());
@@ -279,6 +331,118 @@ void LandmarkLocalizationNode::publishVisualizationMarkers(const std::vector<Lan
   }
   
   marker_pub_->publish(marker_array);
+}
+
+bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo>& prior_landmarks,
+                                                 const std::vector<Landmark>& detected_landmarks,
+                                                 geometry_msgs::msg::PoseStamped& robot_pose) {
+  if (prior_landmarks.size() < min_landmarks_for_pose_ || detected_landmarks.size() < min_landmarks_for_pose_) {
+    RCLCPP_WARN(this->get_logger(), "Need at least %d matched landmarks for accurate pose calculation, got %zu", 
+              min_landmarks_for_pose_, detected_landmarks.size());
+    return false;
+  }
+  
+  try {
+    // 使用SVD分解计算最优刚体变换
+    // 计算两个点集的质心
+    Eigen::Vector2d centroid_prior(0, 0);
+    Eigen::Vector2d centroid_detected(0, 0);
+    
+    for (size_t i = 0; i < prior_landmarks.size(); ++i) {
+      centroid_prior += Eigen::Vector2d(prior_landmarks[i].x, prior_landmarks[i].y);
+      centroid_detected += Eigen::Vector2d(detected_landmarks[i].x, detected_landmarks[i].y);
+    }
+    centroid_prior /= prior_landmarks.size();
+    centroid_detected /= detected_landmarks.size();
+    
+    // 构建去质心坐标
+    Eigen::MatrixXd X(2, prior_landmarks.size());
+    Eigen::MatrixXd Y(2, detected_landmarks.size());
+    
+    for (size_t i = 0; i < prior_landmarks.size(); ++i) {
+      X.col(i) = Eigen::Vector2d(prior_landmarks[i].x, prior_landmarks[i].y) - centroid_prior;
+      Y.col(i) = Eigen::Vector2d(detected_landmarks[i].x, detected_landmarks[i].y) - centroid_detected;
+    }
+    
+    // 计算协方差矩阵
+    Eigen::Matrix2d H = Y * X.transpose();
+    
+    // SVD分解
+    Eigen::JacobiSVD<Eigen::Matrix2d> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix2d U = svd.matrixU();
+    Eigen::Matrix2d V = svd.matrixV();
+    
+    // 计算旋转矩阵 R = V * U^T
+    Eigen::Matrix2d R = V * U.transpose();
+    
+    // 确保右手坐标系（det(R) = 1）
+    if (R.determinant() < 0) {
+      V.col(1) *= -1;
+      R = V * U.transpose();
+    }
+    
+    // 计算平移向量
+    Eigen::Vector2d t = centroid_prior - R * centroid_detected;
+    
+    // 从旋转矩阵提取角度
+    double theta = atan2(R(1, 0), R(0, 0));
+    
+    // 现在得到的是激光雷达在map系下的位姿
+    tf2::Transform lidar_to_map_tf;
+    lidar_to_map_tf.setOrigin(tf2::Vector3(t.x(), t.y(), 0.0));
+    
+    tf2::Quaternion lidar_q;
+    lidar_q.setRPY(0, 0, theta);
+    lidar_to_map_tf.setRotation(lidar_q);
+    
+    // 如果初始化时没有获取到TF变换，尝试在回调中获取
+    tf2::Transform base_to_lidar_tf;
+    if (has_base_to_lidar_tf_) {
+      base_to_lidar_tf = base_to_lidar_tf_;
+    } else {
+      // 尝试在回调中获取TF变换（备选方案）
+      try {
+        geometry_msgs::msg::TransformStamped base_to_lidar_tf_msg = tf_buffer_->lookupTransform(
+            base_frame_, lidar_frame_, tf2::TimePointZero);
+        tf2::fromMsg(base_to_lidar_tf_msg.transform, base_to_lidar_tf);
+        RCLCPP_INFO(this->get_logger(), "Successfully got TF transform in callback");
+        has_base_to_lidar_tf_ = true;
+        base_to_lidar_tf_ = base_to_lidar_tf;
+      } catch (tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(), "Could not transform %s to %s: %s", 
+                   base_frame_.c_str(), lidar_frame_.c_str(), ex.what());
+        return false;
+      }
+    }
+    
+    // 计算base_link在map系下的位姿: base_pose = lidar_pose * base_to_lidar_tf
+    tf2::Transform base_to_map_tf = lidar_to_map_tf * base_to_lidar_tf;
+    
+    // 转换为Pose消息
+    robot_pose.pose.position.x = base_to_map_tf.getOrigin().x();
+    robot_pose.pose.position.y = base_to_map_tf.getOrigin().y();
+    robot_pose.pose.position.z = 0.0;
+    robot_pose.pose.orientation.x = base_to_map_tf.getRotation().x();
+    robot_pose.pose.orientation.y = base_to_map_tf.getRotation().y();
+    robot_pose.pose.orientation.z = base_to_map_tf.getRotation().z();
+    robot_pose.pose.orientation.w = base_to_map_tf.getRotation().w();
+    
+    // 计算yaw角度（从四元数提取）
+    tf2::Quaternion q = base_to_map_tf.getRotation();
+    double base_yaw = std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
+                                1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
+    
+    RCLCPP_INFO(this->get_logger(), "Base link pose: x=%.3f, y=%.3f, theta=%.3f rad", 
+               base_to_map_tf.getOrigin().x(), 
+               base_to_map_tf.getOrigin().y(), 
+               base_yaw);
+    
+    return true;
+    
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Error calculating robot pose: %s", e.what());
+    return false;
+  }
 }
 
 } // namespace landmark_localization
