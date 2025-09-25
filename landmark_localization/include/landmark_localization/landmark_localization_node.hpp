@@ -19,18 +19,24 @@ public:
   ~LandmarkLocalizationNode();
 
 private:
-  void laserScanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+  void laserScan1Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+  void laserScan2Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+  void processLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void loadPriorLandmarks();
   void publishLandmarks(const std::vector<Landmark>& matched_landmarks,
-                       const builtin_interfaces::msg::Time& stamp);
+                       const builtin_interfaces::msg::Time& stamp,
+                       const std::string& lidar_frame);
   void publishVisualizationMarkers(const std::vector<Landmark>& landmarks,
-                                  const builtin_interfaces::msg::Time& stamp);
+                                  const builtin_interfaces::msg::Time& stamp,
+                                  const std::string& lidar_frame);
   bool calculateRobotPose(const std::vector<LandmarkInfo>& prior_landmarks,
                          const std::vector<Landmark>& detected_landmarks,
-                         geometry_msgs::msg::PoseStamped& robot_pose);
+                         geometry_msgs::msg::PoseStamped& robot_pose,
+                         const std::string& lidar_frame);
   
   // ROS2 components
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan1_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan2_sub_;
   rclcpp::Publisher<cartographer_ros_msgs::msg::LandmarkList>::SharedPtr landmark_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
@@ -46,11 +52,23 @@ private:
   
   // Parameters
   std::string pbstream_file_;
-  std::string lidar_frame_;
   std::string map_frame_;
   std::string base_frame_;
-  tf2::Transform base_to_lidar_tf_;
-  bool has_base_to_lidar_tf_;
+  
+  // 激光雷达1参数
+  std::string lidar1_frame_ = "";
+  std::string scan1_topic_;
+  bool use_lidar1_;
+  tf2::Transform base_to_lidar1_tf_;
+  bool has_base_to_lidar1_tf_ = false;
+  
+  // 激光雷达2参数
+  std::string lidar2_frame_ = "";
+  std::string scan2_topic_;
+  bool use_lidar2_;
+  tf2::Transform base_to_lidar2_tf_;
+  bool has_base_to_lidar2_tf_ = false;
+  
   double matching_threshold_;
   bool publish_visualization_;
   int intensity_threshold_use = 1600;
