@@ -422,13 +422,13 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
       } else {
           try {
             geometry_msgs::msg::TransformStamped base_to_lidar_tf_msg = tf_buffer_->lookupTransform(
-                base_frame_, lidar_frame, tf2::TimePointZero);
+                lidar_frame, base_frame_, tf2::TimePointZero);
             tf2::fromMsg(base_to_lidar_tf_msg.transform, base_to_lidar_tf);
             std::cout << "Successfully got TF transform in callback" << std::endl;
             has_base_to_lidar1_tf_ = true;
             base_to_lidar1_tf_ = base_to_lidar_tf;
           } catch (tf2::TransformException &ex) {
-            std::cerr << "Could not transform " << base_frame_ << " to " << lidar_frame << ": " << ex.what() << std::endl;
+            std::cerr << "Could not transform " << lidar_frame << " to " << base_frame_ << ": " << ex.what() << std::endl;
             return false;
           }
       }
@@ -438,13 +438,13 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
       } else {
           try {
             geometry_msgs::msg::TransformStamped base_to_lidar_tf_msg = tf_buffer_->lookupTransform(
-                base_frame_, lidar_frame, tf2::TimePointZero);
+                lidar_frame, base_frame_, tf2::TimePointZero);
             tf2::fromMsg(base_to_lidar_tf_msg.transform, base_to_lidar_tf);
             std::cout << "Successfully got TF transform in callback" << std::endl;
             has_base_to_lidar2_tf_ = true;
             base_to_lidar2_tf_ = base_to_lidar_tf;
           } catch (tf2::TransformException &ex) {
-            std::cerr << "Could not transform " << base_frame_ << " to " << lidar_frame << ": " << ex.what() << std::endl;
+            std::cerr << "Could not transform " << lidar_frame << " to " << base_frame_ << ": " << ex.what() << std::endl;
             return false;
           }
       }
