@@ -83,8 +83,8 @@ def generate_launch_description():
         description='Topic for lidar2 scan data'
     )
 
-    use_combined_processing_arg = DeclareLaunchArgument(
-        'use_combined_processing',
+    use_combine_arg = DeclareLaunchArgument(
+        'use_combine',
         default_value='true',
         description='Whether to use combined processing for lidar1 and lidar2'
     )
@@ -117,7 +117,7 @@ def generate_launch_description():
             'use_lidar2': LaunchConfiguration('use_lidar2'),
             'scan2_topic': LaunchConfiguration('scan2_topic'),
 
-            'use_combined_processing': LaunchConfiguration('use_combined_processing'),
+            'use_combine': LaunchConfiguration('use_combine'),
             
             # 固定参数
             'landmark_topic': '/landmark',
@@ -139,6 +139,6 @@ def generate_launch_description():
         scan1_topic_arg,
         use_lidar2_arg,
         scan2_topic_arg,
-        use_combined_processing_arg,
+        use_combine_arg,
         landmark_localization_node
     ])

@@ -40,7 +40,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("lidar2_frame", "laser_2");
   this->declare_parameter("scan2_topic", "/scan_2");
 
-  this->declare_parameter("use_combined_processing", true);
+  this->declare_parameter("use_combine", true);
   
   this->declare_parameter("landmark_topic", "/landmark");
   this->declare_parameter("visualization_topic", "/landmark_localization_markers");
@@ -65,9 +65,9 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   use_lidar2_ = this->get_parameter("use_lidar2").as_bool();
   scan2_topic_ = this->get_parameter("scan2_topic").as_string();
 
-  use_combined_processing_ = this->get_parameter("use_combined_processing").as_bool();
-  if (!use_lidar2_ && use_combined_processing_) {
-    use_combined_processing_ = false;
+  use_combine_ = this->get_parameter("use_combine").as_bool();
+  if (!use_lidar2_ && use_combine_) {
+    use_combine_ = false;
     RCLCPP_WARN(this->get_logger(), "Combined processing is disabled since lidar2 is not used");
   }
   
@@ -162,7 +162,7 @@ void LandmarkLocalizationNode::laserScan1Callback(const sensor_msgs::msg::LaserS
   if (lidar1_frame_.empty()) {
     lidar1_frame_ = msg->header.frame_id;
   }
-  if (use_combined_processing_) {
+  if (use_combine_) {
     processCombinedScan(msg);
   } else {
     processLaserScan(msg);
@@ -175,7 +175,7 @@ void LandmarkLocalizationNode::laserScan2Callback(const sensor_msgs::msg::LaserS
     lidar2_frame_ = msg->header.frame_id;
   }
   // 存储最新的scan2消息
-  if (use_combined_processing_) {
+  if (use_combine_) {
     std::lock_guard<std::mutex> lock(scan2_mutex_);
     latest_scan2_msg_ = msg;
   } 

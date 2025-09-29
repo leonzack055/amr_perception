@@ -60,7 +60,7 @@ private:
   std::string map_frame_;
   std::string base_frame_;
   std::string odom_frame_;
-  bool use_combined_processing_ = true; // 是否启用双雷达联合处理
+  bool use_combine_ = true; // 是否启用双雷达联合处理
   tf2::Transform lidar2_to_lidar1_tf_;
   bool has_lidar2_to_lidar1_tf_ = false;
   
