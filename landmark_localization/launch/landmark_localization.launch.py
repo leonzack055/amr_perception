@@ -27,6 +27,12 @@ def generate_launch_description():
         description='Base frame ID'
     )
 
+    odom_frame_arg = DeclareLaunchArgument(
+        'odom_frame',
+        default_value='odom',
+        description='Odometry frame ID'
+    )
+
     matching_threshold_arg = DeclareLaunchArgument(
         'matching_threshold',
         default_value='0.2',
@@ -76,7 +82,13 @@ def generate_launch_description():
         default_value='/rear_scan',
         description='Topic for lidar2 scan data'
     )
-    
+
+    use_combine_arg = DeclareLaunchArgument(
+        'use_combine',
+        default_value='false',
+        description='Whether to use combined processing for lidar1 and lidar2'
+    )
+
     # Get the package share directory
     pkg_share = get_package_share_directory('landmark_localization')
     
@@ -90,6 +102,7 @@ def generate_launch_description():
             'pbstream_file': LaunchConfiguration('pbstream_file'),
             'map_frame': LaunchConfiguration('map_frame'),
             'base_frame': LaunchConfiguration('base_frame'),
+            'odom_frame': LaunchConfiguration('odom_frame'),
             'matching_threshold': LaunchConfiguration('matching_threshold'),
             'publish_visualization': True,
             'intensity_threshold_use': LaunchConfiguration('intensity_threshold_use'),
@@ -103,6 +116,8 @@ def generate_launch_description():
             # 激光雷达2参数
             'use_lidar2': LaunchConfiguration('use_lidar2'),
             'scan2_topic': LaunchConfiguration('scan2_topic'),
+
+            'use_combine': LaunchConfiguration('use_combine'),
             
             # 固定参数
             'landmark_topic': '/landmark',
@@ -115,6 +130,7 @@ def generate_launch_description():
         pbstream_file_arg,
         map_frame_arg,
         base_frame_arg,
+        odom_frame_arg,
         matching_threshold_arg,
         tf_time_tolerance_arg,
         intensity_threshold_use_arg,
@@ -123,5 +139,6 @@ def generate_launch_description():
         scan1_topic_arg,
         use_lidar2_arg,
         scan2_topic_arg,
+        use_combine_arg,
         landmark_localization_node
     ])
