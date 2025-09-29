@@ -22,6 +22,11 @@ private:
   void laserScan1Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void laserScan2Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void processLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+  void processCombinedScan(const sensor_msgs::msg::LaserScan::SharedPtr scan1_msg);
+  bool transformScan2LandmarksToScan1Frame(const sensor_msgs::msg::LaserScan::SharedPtr scan2_msg,
+                                          const builtin_interfaces::msg::Time& target_time,
+                                          const std::string& target_frame,
+                                          std::vector<Landmark>& transformed_landmarks);
   void loadPriorLandmarks();
   void publishLandmarks(const std::vector<Landmark>& matched_landmarks,
                        const builtin_interfaces::msg::Time& stamp,
@@ -54,6 +59,14 @@ private:
   std::string pbstream_file_;
   std::string map_frame_;
   std::string base_frame_;
+  std::string odom_frame_;
+  bool use_combined_processing_ = true; // 是否启用双雷达联合处理
+  tf2::Transform lidar2_to_lidar1_tf_;
+  bool has_lidar2_to_lidar1_tf_ = false;
+  
+  // 存储最新的scan2消息
+  sensor_msgs::msg::LaserScan::SharedPtr latest_scan2_msg_ = nullptr;
+  std::mutex scan2_mutex_;
   
   // 激光雷达1参数
   std::string lidar1_frame_ = "";
