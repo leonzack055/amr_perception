@@ -85,7 +85,7 @@ def generate_launch_description():
 
     use_combine_arg = DeclareLaunchArgument(
         'use_combine',
-        default_value='true',
+        default_value='false',
         description='Whether to use combined processing for lidar1 and lidar2'
     )
 
