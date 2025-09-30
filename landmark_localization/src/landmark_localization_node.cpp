@@ -213,10 +213,10 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
     }
     
     // 检查是否需要结合scan2数据
-    if (scan1_detected_posts.size() < min_landmarks_for_pose_ && use_lidar2_) {
+    if (scan1_detected_posts.size() > 0 && scan1_detected_posts.size() < min_landmarks_for_pose_ && use_lidar2_) {
       std::lock_guard<std::mutex> lock(scan2_mutex_);
       if (latest_scan2_msg_ != nullptr) {
-        std::cout << "Scan1 detected " << scan1_detected_posts.size() << " posts, combining with scan2 data" << std::endl;
+        std::cout << "Combining with scan2 data" << std::endl;
         // 处理scan2数据（变换到scan1坐标系）
         std::vector<Landmark> scan2_transformed_landmarks;
         if (transformScan2LandmarksToScan1Frame(latest_scan2_msg_, scan1_msg->header.stamp, 
@@ -226,14 +226,14 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
                                       scan2_transformed_landmarks.begin(), 
                                       scan2_transformed_landmarks.end());
         }
-      }
-    }
 
-    std::cout << "Total landmarks after combination: " << all_detected_landmarks.size() << std::endl;
-    
-    if (all_detected_landmarks.size() < min_landmarks_for_pose_) {
-      std::cout << "Combined landmarks still less than " << min_landmarks_for_pose_ << ", skipping pose calculation" << std::endl;
-      return;
+        std::cout << "Total landmarks after combination: " << all_detected_landmarks.size() << std::endl;
+        
+        if (all_detected_landmarks.size() < min_landmarks_for_pose_) {
+          std::cout << "Combined landmarks still less than " << min_landmarks_for_pose_ << ", skipping pose calculation" << std::endl;
+          return;
+        }
+      }
     }
     
     // 获取从scan1坐标系到map坐标系的变换
