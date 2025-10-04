@@ -61,8 +61,6 @@ private:
   std::string base_frame_;
   std::string odom_frame_;
   bool use_combine_ = true; // 是否启用双雷达联合处理
-  tf2::Transform lidar2_to_lidar1_tf_;
-  bool has_lidar2_to_lidar1_tf_ = false;
   
   // 存储最新的scan2消息
   sensor_msgs::msg::LaserScan::SharedPtr latest_scan2_msg_ = nullptr;

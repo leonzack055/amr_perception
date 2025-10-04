@@ -348,52 +348,19 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
       return false;
     }
     
-    // 第一步：获取从scan2时间到目标时间的scan2_frame自身运动变换
-    // 通过odom坐标系作为中介
-    
-    // 1.1 获取scan2_frame在scan2时间在odom系下的位姿
-    geometry_msgs::msg::TransformStamped scan2_to_odom_at_scan2_time;
-    scan2_to_odom_at_scan2_time = tf_buffer_->lookupTransform(
-        odom_frame_, scan2_msg->header.frame_id, scan2_msg->header.stamp, tf2::durationFromSec(tf_time_tolerance_));
-    
-    // 1.2 获取scan2_frame在目标时间在odom系下的位姿
-    geometry_msgs::msg::TransformStamped scan2_to_odom_at_target_time;
-    scan2_to_odom_at_target_time = tf_buffer_->lookupTransform(
-        odom_frame_, scan2_msg->header.frame_id, target_time, tf2::durationFromSec(tf_time_tolerance_));
-    
-    // 计算scan2_frame从scan2时间到目标时间的自身运动变换
-    // transform1: scan2_time的scan2_frame → target_time的scan2_frame
-    tf2::Transform tf_scan2_to_odom_at_scan2_time;
-    tf2::fromMsg(scan2_to_odom_at_scan2_time.transform, tf_scan2_to_odom_at_scan2_time);
-    
-    tf2::Transform tf_scan2_to_odom_at_target_time;
-    tf2::fromMsg(scan2_to_odom_at_target_time.transform, tf_scan2_to_odom_at_target_time);
-    
-    // 从odom系变换回scan2_frame：scan2_frame_target_time = odom_to_scan2_target_time * scan2_to_odom_scan2_time
-    tf2::Transform tf_scan2_time_to_target_time = 
-        tf_scan2_to_odom_at_target_time.inverse() * tf_scan2_to_odom_at_scan2_time;
-    
-    // 第二步：获取从scan2_frame到target_frame的静态变换
-    tf2::Transform tf_scan2_to_target;
-    if (has_lidar2_to_lidar1_tf_) {
-      tf_scan2_to_target = lidar2_to_lidar1_tf_;
-    } else {
-        try {
-          geometry_msgs::msg::TransformStamped scan2_to_target = tf_buffer_->lookupTransform(
-              target_frame, scan2_msg->header.frame_id, tf2::TimePointZero);
-          tf2::fromMsg(scan2_to_target.transform, tf_scan2_to_target);
-          std::cout << "Successfully got TF transform in callback" << std::endl;
-          has_lidar2_to_lidar1_tf_ = true;
-          lidar2_to_lidar1_tf_ = tf_scan2_to_target;
-        } catch (tf2::TransformException &ex) {
-          std::cerr << "Could not transform " << target_frame << " to " << scan2_msg->header.frame_id << ": " << ex.what() << std::endl;
-          return false;
-        }
+    // 直接查询完整变换：从scan2_frame在scan2时间到target_frame在目标时间
+    tf2::Transform tf_complete;
+    try {
+      geometry_msgs::msg::TransformStamped complete_transform = tf_buffer_->lookupTransform(
+        target_frame, target_time,           // 目标坐标系和时间
+        scan2_msg->header.frame_id, scan2_msg->header.stamp,  // 源坐标系和时间
+        odom_frame_,                          // 固定坐标系（用于时间插值）
+        tf2::durationFromSec(tf_time_tolerance_));
+      tf2::fromMsg(complete_transform.transform, tf_complete);
+    } catch (tf2::TransformException &ex) {
+      std::cerr << "Could not transform " << target_frame << " to " << scan2_msg->header.frame_id << ": " << ex.what() << std::endl;
+      return false;
     }
-        
-    // 第三步：组合变换
-    // 完整变换 = 静态TF(scan2→target) × 时间运动变换(scan2_time→scan2_target_time)
-    tf2::Transform tf_complete = tf_scan2_to_target * tf_scan2_time_to_target_time;
     
     // 变换scan2检测到的地标
     for (const auto& post : scan2_detected_posts) {
