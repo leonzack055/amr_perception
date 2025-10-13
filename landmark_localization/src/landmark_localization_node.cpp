@@ -581,26 +581,70 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
     return false;
   }
 
+  // 创建可修改的副本
+  std::vector<LandmarkInfo> selected_prior_landmarks = prior_landmarks;
+  std::vector<Landmark> selected_detected_landmarks = detected_landmarks;
+
+  // 如果检测到的地标数量超过最小值，选择欧氏距离最近的min_landmarks_for_pose_个地标
+  if (detected_landmarks.size() >= min_landmarks_for_pose_) {
+    // 计算每个地标的欧氏距离
+    std::vector<std::pair<double, size_t>> distances_with_indices;
+    for (size_t i = 0; i < detected_landmarks.size(); ++i) {
+      double distance = std::sqrt(detected_landmarks[i].x * detected_landmarks[i].x + 
+                                 detected_landmarks[i].y * detected_landmarks[i].y);
+      distances_with_indices.emplace_back(distance, i);
+    }
+    
+    // 按距离升序排序
+    std::sort(distances_with_indices.begin(), distances_with_indices.end(),
+              [](const std::pair<double, size_t>& a, const std::pair<double, size_t>& b) {
+                return a.first < b.first;
+              });
+    
+    // 选择前min_landmarks_for_pose_个最近的地标
+    std::vector<LandmarkInfo> temp_prior_landmarks;
+    std::vector<Landmark> temp_detected_landmarks;
+    
+    for (size_t i = 0; i < min_landmarks_for_pose_; ++i) {
+      size_t original_index = distances_with_indices[i].second;
+      temp_prior_landmarks.push_back(prior_landmarks[original_index]);
+      temp_detected_landmarks.push_back(detected_landmarks[original_index]);
+    }
+    
+    // 更新选中的地标
+    selected_prior_landmarks = std::move(temp_prior_landmarks);
+    selected_detected_landmarks = std::move(temp_detected_landmarks);
+    
+    std::cout << "Selected " << min_landmarks_for_pose_ << " closest landmarks from " 
+              << detected_landmarks.size() << " detected landmarks" << std::endl;
+  }
+
+  std::cout << "Selected closest landmarks id: ";
+  for (auto landmark : selected_prior_landmarks) {
+     std::cout << landmark.landmark_id << " ";
+  }
+  std::cout << std::endl;
+
   try {
     // 使用SVD分解计算最优刚体变换
     // 计算两个点集的质心
     Eigen::Vector2d centroid_prior(0, 0);
     Eigen::Vector2d centroid_detected(0, 0);
     
-    for (size_t i = 0; i < prior_landmarks.size(); ++i) {
-      centroid_prior += Eigen::Vector2d(prior_landmarks[i].x, prior_landmarks[i].y);
-      centroid_detected += Eigen::Vector2d(detected_landmarks[i].x, detected_landmarks[i].y);
+    for (size_t i = 0; i < selected_prior_landmarks.size(); ++i) {
+      centroid_prior += Eigen::Vector2d(selected_prior_landmarks[i].x, selected_prior_landmarks[i].y);
+      centroid_detected += Eigen::Vector2d(selected_detected_landmarks[i].x, selected_detected_landmarks[i].y);
     }
-    centroid_prior /= prior_landmarks.size();
-    centroid_detected /= detected_landmarks.size();
+    centroid_prior /= selected_prior_landmarks.size();
+    centroid_detected /= selected_detected_landmarks.size();
     
     // 构建去质心坐标
-    Eigen::MatrixXd X(2, prior_landmarks.size());
-    Eigen::MatrixXd Y(2, detected_landmarks.size());
+    Eigen::MatrixXd X(2, selected_prior_landmarks.size());
+    Eigen::MatrixXd Y(2, selected_detected_landmarks.size());
     
-    for (size_t i = 0; i < prior_landmarks.size(); ++i) {
-      X.col(i) = Eigen::Vector2d(prior_landmarks[i].x, prior_landmarks[i].y) - centroid_prior;
-      Y.col(i) = Eigen::Vector2d(detected_landmarks[i].x, detected_landmarks[i].y) - centroid_detected;
+    for (size_t i = 0; i < selected_prior_landmarks.size(); ++i) {
+      X.col(i) = Eigen::Vector2d(selected_prior_landmarks[i].x, selected_prior_landmarks[i].y) - centroid_prior;
+      Y.col(i) = Eigen::Vector2d(selected_detected_landmarks[i].x, selected_detected_landmarks[i].y) - centroid_detected;
     }
     
     // 计算协方差矩阵
