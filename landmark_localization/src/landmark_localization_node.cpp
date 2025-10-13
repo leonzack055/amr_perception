@@ -179,7 +179,6 @@ void LandmarkLocalizationNode::laserScan2Callback(const sensor_msgs::msg::LaserS
     std::lock_guard<std::mutex> lock(scan2_mutex_);
     latest_scan2_msg_ = msg;
   } 
-  processLaserScan(msg);
 }
 
 void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::LaserScan::SharedPtr scan1_msg) {
@@ -213,7 +212,7 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
     }
     
     // 检查是否需要结合scan2数据
-    if (scan1_detected_posts.size() > 0 && scan1_detected_posts.size() < min_landmarks_for_pose_ && use_lidar2_) {
+    if (scan1_detected_posts.size() < min_landmarks_for_pose_ && use_lidar2_) {
       std::lock_guard<std::mutex> lock(scan2_mutex_);
       if (latest_scan2_msg_ != nullptr) {
         std::cout << "Combining with scan2 data" << std::endl;
@@ -342,9 +341,6 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
     std::cout << "Scan2 detected " << scan2_detected_posts.size() << " posts at original time" << std::endl;
     
     if (scan2_detected_posts.empty()) {
-      return false;
-    } else if (scan2_detected_posts.size() >= min_landmarks_for_pose_) {
-      std::cout << "Scan2 alone has enough landmarks (" << scan2_detected_posts.size() << "), no need to transform" << std::endl;
       return false;
     }
     
