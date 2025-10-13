@@ -26,7 +26,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("odom_frame", "odom");
   this->declare_parameter("matching_threshold", 0.5);
   this->declare_parameter("publish_visualization", true);
-  this->declare_parameter("intensity_threshold_use", 1600);
+  this->declare_parameter("intensity_threshold_use", 1000);
   this->declare_parameter("tf_time_tolerance", 0.05);
   this->declare_parameter("min_landmarks_for_pose", 3);
   

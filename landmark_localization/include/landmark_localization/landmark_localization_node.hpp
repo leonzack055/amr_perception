@@ -82,7 +82,7 @@ private:
   
   double matching_threshold_;
   bool publish_visualization_;
-  int intensity_threshold_use = 1600;
+  int intensity_threshold_use = 1000;
   double tf_time_tolerance_ = 0.05;
   int min_landmarks_for_pose_ = 3; 
   

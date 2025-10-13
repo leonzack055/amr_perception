@@ -42,7 +42,7 @@ struct LaserScan
 class ReflectivePostDetector
 {
 public:
-  ReflectivePostDetector(int intensity_threshold = 1600);
+  ReflectivePostDetector(int intensity_threshold = 1000);
   ~ReflectivePostDetector();
 
   // Detect reflective posts from laser scan (非 ROS 环境可直接调用)
@@ -51,10 +51,10 @@ public:
 
 
   // 参数声明
-  int intensity_threshold_use = 1600;
+  int intensity_threshold_use = 1000;
   double cluster_eps = 0.064;
-  int min_cluster_points = 12;
-  double diameter_min = 0.05;
+  int min_cluster_points = 3;
+  double diameter_min = 0.04;
   double diameter_max = 0.15;
   double residual_avg_threshold = 0.01;
   double residual_std_threshold = 0.005;
@@ -65,7 +65,7 @@ public:
   double match_distance_threshold = 0.1;
   double arc_threshold = 0.1;
   double max_arc_feature = 30.0;
-  int arc_min_points = 10;
+  int arc_min_points = 4;
   // double direction_tolerance = 0.785;
   double residual_real = 0.032;
   double sensitivity = 2.0;
