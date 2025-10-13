@@ -544,10 +544,10 @@ public:
             "/scan", 1, std::bind(&ReflectorDetector::scan_callback, this, std::placeholders::_1));
 
         publisher_debug = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-            "/charger_relative_pose_debug1", 1);
+            "/charger_relative_pose_debug", 1);
         
         publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-            "/charger_relative_pose1", 1);
+            "/charger_relative_pose", 1);
 
         RCLCPP_INFO(this->get_logger(), "反光条检测节点初始化完成");
     }
