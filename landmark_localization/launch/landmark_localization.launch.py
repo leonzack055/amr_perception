@@ -47,7 +47,7 @@ def generate_launch_description():
 
     intensity_threshold_use_arg = DeclareLaunchArgument(
         'intensity_threshold_use',
-        default_value='1000',
+        default_value='1600',
         description='强度阈值'
     )
 
