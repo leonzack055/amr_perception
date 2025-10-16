@@ -45,6 +45,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("landmark_topic", "/landmark");
   this->declare_parameter("visualization_topic", "/landmark_localization_markers");
   this->declare_parameter("landmark_localization_topic", "/global_pose_qr");
+  this->declare_parameter("initial_pose_topic", "/initial_pose");
   
   // Get parameters
   pbstream_file_ = this->get_parameter("pbstream_file").as_string();
@@ -74,6 +75,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   std::string landmark_topic = this->get_parameter("landmark_topic").as_string();
   std::string visualization_topic = this->get_parameter("visualization_topic").as_string();
   std::string landmark_localization_topic = this->get_parameter("landmark_localization_topic").as_string();
+  initial_pose_topic_ = this->get_parameter("initial_pose_topic").as_string();
 
   // Initialize TF2
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -102,6 +104,11 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
     RCLCPP_INFO(this->get_logger(), "Subscribed to lidar2 topic: %s", scan2_topic_.c_str());
   }
   
+  initial_pose_sub_ = this->create_subscription<amr_ros_msg::msg::PoseWithTypeStamped>(
+    initial_pose_topic_, 10,
+    std::bind(&LandmarkLocalizationNode::initialPoseCallback, this, std::placeholders::_1));
+    RCLCPP_INFO(this->get_logger(), "Subscribed to initial pose topic: %s", initial_pose_topic_.c_str());  
+
   landmark_pub_ = this->create_publisher<cartographer_ros_msgs::msg::LandmarkList>(
     landmark_topic, 10);
   
@@ -732,6 +739,32 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
   } catch (const std::exception& e) {
     std::cerr << "Error calculating robot pose: " << e.what() << std::endl;
     return false;
+  }
+}
+
+void LandmarkLocalizationNode::initialPoseCallback(const amr_ros_msg::msg::PoseWithTypeStamped::SharedPtr msg) {
+  try {
+    RCLCPP_INFO(this->get_logger(), "Received initial pose message with type: %s", msg->type.c_str());
+    
+    if (msg->type == "M") {  // 手动模式
+      RCLCPP_INFO(this->get_logger(), "Manual mode detected, reloading prior landmarks...");
+      
+      // 重新加载先验地标
+      loadPriorLandmarks();
+      
+      RCLCPP_INFO(this->get_logger(), "Prior landmarks reloaded successfully");
+      
+      // 可以选择在这里发布初始位姿或者进行其他处理
+      // 例如：pose_pub_->publish(msg->inital_pose);
+      
+    } else if (msg->type == "A") {  // 自动模式
+      RCLCPP_INFO(this->get_logger(), "Auto mode detected, no action taken for landmark reloading");
+    } else {
+      RCLCPP_WARN(this->get_logger(), "Unknown initial pose type: %s", msg->type.c_str());
+    }
+    
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Error processing initial pose message: %s", e.what());
   }
 }
 

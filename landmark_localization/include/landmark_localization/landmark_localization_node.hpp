@@ -10,6 +10,7 @@
 #include "landmark_localization/landmark_reader.hpp"
 #include "landmark_localization/landmark_matcher.hpp"
 #include "landmark_localization/reflective_post_detector.hpp"
+#include "amr_ros_msg/msg/pose_with_type_stamped.hpp"
 
 namespace landmark_localization {
 
@@ -21,6 +22,7 @@ public:
 private:
   void laserScan1Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void laserScan2Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+  void initialPoseCallback(const amr_ros_msg::msg::PoseWithTypeStamped::SharedPtr msg);
   void processLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void processCombinedScan(const sensor_msgs::msg::LaserScan::SharedPtr scan1_msg);
   bool transformScan2LandmarksToScan1Frame(const sensor_msgs::msg::LaserScan::SharedPtr scan2_msg,
@@ -42,6 +44,7 @@ private:
   // ROS2 components
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan1_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan2_sub_;
+  rclcpp::Subscription<amr_ros_msg::msg::PoseWithTypeStamped>::SharedPtr initial_pose_sub_;
   rclcpp::Publisher<cartographer_ros_msgs::msg::LandmarkList>::SharedPtr landmark_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
@@ -60,6 +63,7 @@ private:
   std::string map_frame_;
   std::string base_frame_;
   std::string odom_frame_;
+  std::string initial_pose_topic_;
   bool use_combine_ = true; // 是否启用双雷达联合处理
   
   // 存储最新的scan2消息

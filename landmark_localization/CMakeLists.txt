@@ -25,6 +25,7 @@ find_package(cartographer REQUIRED)
 find_package(absl REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
+find_package(amr_ros_msg REQUIRED)
 
 # Include directories
 include_directories(
@@ -112,6 +113,7 @@ ament_target_dependencies(landmark_localization_node
   cartographer_ros_msgs
   std_msgs
   visualization_msgs
+  amr_ros_msg
 )
 
 # Install
@@ -158,5 +160,6 @@ ament_export_dependencies(
   visualization_msgs
   cartographer
   absl
+  amr_ros_msg
 )
 ament_package()

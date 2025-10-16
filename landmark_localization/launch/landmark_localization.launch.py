@@ -122,7 +122,8 @@ def generate_launch_description():
             # 固定参数
             'landmark_topic': '/landmark',
             'visualization_topic': '/landmark_localization_markers',
-            'landmark_localization_topic': '/global_pose_qr'
+            'landmark_localization_topic': '/global_pose_qr',
+            'initial_pose_topic': '/initial_pose',
         }]
     )
     
