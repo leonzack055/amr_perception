@@ -89,6 +89,18 @@ def generate_launch_description():
         description='Whether to use combined processing for lidar1 and lidar2'
     )
 
+    use_calculate_filter_arg = DeclareLaunchArgument(
+        'use_calculate_filter',
+        default_value='false',
+        description='Whether to use filtering for pose calculation'
+    )
+
+    filter_num_arg = DeclareLaunchArgument(
+        'filter_num',
+        default_value='5',
+        description='Filter number: consecutive times required for same landmark combination'
+    )
+
     # Get the package share directory
     pkg_share = get_package_share_directory('landmark_localization')
     
@@ -108,6 +120,8 @@ def generate_launch_description():
             'intensity_threshold_use': LaunchConfiguration('intensity_threshold_use'),
             'tf_time_tolerance': LaunchConfiguration('tf_time_tolerance'),
             'min_landmarks_for_pose': LaunchConfiguration('min_landmarks_for_pose'),
+            'use_calculate_filter': LaunchConfiguration('use_calculate_filter'),
+            'filter_num': LaunchConfiguration('filter_num'),
             
             # 激光雷达1参数
             'use_lidar1': LaunchConfiguration('use_lidar1'),
@@ -141,5 +155,7 @@ def generate_launch_description():
         use_lidar2_arg,
         scan2_topic_arg,
         use_combine_arg,
+        use_calculate_filter_arg,
+        filter_num_arg,
         landmark_localization_node
     ])

@@ -63,8 +63,11 @@ private:
   std::string map_frame_;
   std::string base_frame_;
   std::string odom_frame_;
+  std::string landmark_topic_;
+  std::string visualization_topic_;
+  std::string landmark_localization_topic_;
   std::string initial_pose_topic_;
-  bool use_combine_ = true; // 是否启用双雷达联合处理
+  bool use_combine_ = false; // 是否启用双雷达联合处理
   
   // 存储最新的scan2消息
   sensor_msgs::msg::LaserScan::SharedPtr latest_scan2_msg_ = nullptr;
@@ -92,6 +95,14 @@ private:
   
   // Prior landmarks from map
   std::vector<LandmarkInfo> prior_landmarks_;
+
+  // 反光柱ID组合滤波
+  bool use_calculate_filter_ = false;
+  int filter_num_ = 5;
+  std::vector<std::set<std::string>> recent_landmark_sets_;
+  int consecutive_count_ = 0;
+  std::set<std::string> last_accepted_set_; 
+  bool checkFilterCondition(const std::vector<LandmarkInfo>& selected_prior_landmarks);
 };
 
 } // namespace landmark_localization

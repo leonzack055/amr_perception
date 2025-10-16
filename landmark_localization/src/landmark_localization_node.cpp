@@ -40,12 +40,19 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   this->declare_parameter("lidar2_frame", "laser_2");
   this->declare_parameter("scan2_topic", "/scan_2");
 
-  this->declare_parameter("use_combine", true);
+  this->declare_parameter("use_combine", false);
   
   this->declare_parameter("landmark_topic", "/landmark");
   this->declare_parameter("visualization_topic", "/landmark_localization_markers");
   this->declare_parameter("landmark_localization_topic", "/global_pose_qr");
   this->declare_parameter("initial_pose_topic", "/initial_pose");
+  
+  this->declare_parameter("use_calculate_filter", false);
+  this->declare_parameter("filter_num", 5);
+
+  // 反光柱ID组合滤波
+  use_calculate_filter_ = this->get_parameter("use_calculate_filter").as_bool();
+  filter_num_ = this->get_parameter("filter_num").as_int();
   
   // Get parameters
   pbstream_file_ = this->get_parameter("pbstream_file").as_string();
@@ -72,9 +79,9 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
     RCLCPP_WARN(this->get_logger(), "Combined processing is disabled since lidar2 is not used");
   }
   
-  std::string landmark_topic = this->get_parameter("landmark_topic").as_string();
-  std::string visualization_topic = this->get_parameter("visualization_topic").as_string();
-  std::string landmark_localization_topic = this->get_parameter("landmark_localization_topic").as_string();
+  landmark_topic_ = this->get_parameter("landmark_topic").as_string();
+  visualization_topic_ = this->get_parameter("visualization_topic").as_string();
+  landmark_localization_topic_ = this->get_parameter("landmark_localization_topic").as_string();
   initial_pose_topic_ = this->get_parameter("initial_pose_topic").as_string();
 
   // Initialize TF2
@@ -110,14 +117,14 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
     RCLCPP_INFO(this->get_logger(), "Subscribed to initial pose topic: %s", initial_pose_topic_.c_str());  
 
   landmark_pub_ = this->create_publisher<cartographer_ros_msgs::msg::LandmarkList>(
-    landmark_topic, 10);
+    landmark_topic_, 10);
   
   pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-    landmark_localization_topic, 10);
+    landmark_localization_topic_, 10);
   
   if (publish_visualization_) {
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      visualization_topic, 10);
+      visualization_topic_, 10);
   }
   
   RCLCPP_INFO(this->get_logger(), "Landmark localization node started");
@@ -628,6 +635,11 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
   }
   std::cout << std::endl;
 
+  // 新增滤波检查
+  if (!checkFilterCondition(selected_prior_landmarks)) {
+    return false;
+  }
+
   try {
     // 使用SVD分解计算最优刚体变换
     // 计算两个点集的质心
@@ -765,6 +777,46 @@ void LandmarkLocalizationNode::initialPoseCallback(const amr_ros_msg::msg::PoseW
     
   } catch (const std::exception& e) {
     RCLCPP_ERROR(this->get_logger(), "Error processing initial pose message: %s", e.what());
+  }
+}
+
+bool LandmarkLocalizationNode::checkFilterCondition(const std::vector<LandmarkInfo>& selected_prior_landmarks) {
+  if (!use_calculate_filter_) {
+    return true; // 滤波未启用，直接返回true
+  }
+  
+  std::set<std::string> current_set;
+  for (const auto& landmark : selected_prior_landmarks) {
+    current_set.insert(landmark.landmark_id);
+  }
+  
+  // 如果当前集合与上一次接受的集合相同，增加计数
+  if (current_set == last_accepted_set_) {
+    consecutive_count_++;
+    if (consecutive_count_ >= std::numeric_limits<int>::max()) {
+      consecutive_count_ = filter_num_;
+    }
+  } else {
+    consecutive_count_ = 1;
+    last_accepted_set_ = current_set;
+  }
+  
+  // 检查是否达到连续k次
+  if (consecutive_count_ >= filter_num_) {
+    std::cout << "Filter condition satisfied: consecutive count " << consecutive_count_ 
+              << " >= filter_num=" << filter_num_ << std::endl;
+    return true;
+  } else {
+    std::cout << "Filter condition not satisfied: current consecutive count " << consecutive_count_ 
+              << " < filter_num=" << filter_num_ << ". Landmark IDs: ";
+    
+    // 打印当前地标ID组合
+    for (const auto& id : current_set) {
+      std::cout << id << " ";
+    }
+    std::cout << std::endl;
+    
+    return false;
   }
 }
 
