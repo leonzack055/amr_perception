@@ -16,7 +16,7 @@ class HungarianAlgorithm
 {
 private:
   std::vector<std::vector<double>> costMatrix;
-  int n;   // 矩阵大小
+  int n, m;   // 矩阵大小 n x m
   std::vector<double> u, v;
   std::vector<int> p, way;
   std::vector<bool> used;
@@ -24,32 +24,35 @@ private:
 
 public:
   HungarianAlgorithm(const std::vector<std::vector<double>> & matrix)
-  : costMatrix(matrix), n(matrix.size())
+  : costMatrix(matrix)
   {
+    n = matrix.size();
+    m = matrix.empty() ? 0 : matrix[0].size();
+    
     u.assign(n + 1, 0.0);
-    v.assign(n + 1, 0.0);
-    p.assign(n + 1, 0);
-    way.assign(n + 1, 0);
+    v.assign(m + 1, 0.0);
+    p.assign(m + 1, 0);
+    way.assign(m + 1, 0);
   }
 
   std::vector<int> solve()
   {
-    std::cout << "Starting Hungarian algorithm" << std::endl;
+    std::cout << "Starting Hungarian algorithm with matrix size: " << n << " x " << m << std::endl;
 
     for (int i = 1; i <= n; i++) {
       p[0] = i;
       int j0 = 0;
-      std::vector<double> minv(n + 1, std::numeric_limits<double>::max());
-      used.assign(n + 1, false);
+      std::vector<double> minv(m + 1, std::numeric_limits<double>::max());
+      used.assign(m + 1, false);
 
       int iteration_count = 0;
-      const int max_iterations = n * n;       // 安全计数器
+      const int max_iterations = n * m * 2;       // 安全计数器
 
       do {
         iteration_count++;
         if (iteration_count > max_iterations) {
-          // std::cerr << "Warning: Hungarian algorithm exceeded maximum iterations ("
-          //           << max_iterations << ")" << std::endl;
+          std::cerr << "Warning: Hungarian algorithm exceeded maximum iterations ("
+                    << max_iterations << ")" << std::endl;
           break;
         }
 
@@ -59,12 +62,14 @@ public:
         int j1 = 0;
 
         // 寻找最小值和delta
-        for (int j = 1; j <= n; j++) {
+        for (int j = 1; j <= m; j++) {
           if (!used[j]) {
             double cur = costMatrix[i0 - 1][j - 1] - u[i0] - v[j];
 
             // 处理可能的NaN或异常值
-            if (std::isnan(cur)) {cur = std::numeric_limits<double>::max();}
+            if (std::isnan(cur)) {
+              cur = std::numeric_limits<double>::max();
+            }
 
             if (cur < minv[j] - epsilon) {
               minv[j] = cur;
@@ -80,12 +85,12 @@ public:
 
         // 检查delta是否有效
         if (delta == std::numeric_limits<double>::max() || std::isnan(delta)) {
-          // std::cerr << "Error: Invalid delta value detected" << std::endl;
+          std::cerr << "Error: Invalid delta value detected at iteration " << iteration_count << std::endl;
           break;
         }
 
         // 更新u和v
-        for (int j = 0; j <= n; j++) {
+        for (int j = 0; j <= m; j++) {
           if (used[j]) {
             u[p[j]] += delta;
             v[j] -= delta;
@@ -108,15 +113,11 @@ public:
 
     std::cout << "Hungarian algorithm completed" << std::endl;
 
-    // 构建结果
-    std::vector<int> result(n);
-    for (int j = 1; j <= n; j++) {
+    // 构建结果：对于每个检测点，匹配的先验点索引
+    std::vector<int> result(n, -1);
+    for (int j = 1; j <= m; j++) {
       if (p[j] > 0 && p[j] <= n) {
         result[p[j] - 1] = j - 1;
-      } else {
-        // 处理异常情况
-        result[j - 1] = j - 1;         // 默认分配
-        // std::cerr << "Warning: Invalid assignment at position " << j << std::endl;
       }
     }
 
@@ -175,87 +176,66 @@ std::vector<int> LandmarkMatcher::matchLandmarks(const std::vector<Landmark> & d
   int m = priorMap_.size();
 
   if (n == 0 || m == 0) {
-    // 结束计时
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     std::cout << "匹配耗时: " << duration.count() << " 毫秒" << std::endl;
-
-    return std::vector<int>(n, -1);     // 返回全部未匹配
+    return std::vector<int>(n, -1);
   }
-
-  // 创建成本矩阵
-  std::vector<std::vector<double>> costMatrix(n, std::vector<double>(m, 0.0));
 
   // 提取先验landmark到向量中以便按索引访问
   std::vector<Landmark> priorLandmarks;
+  std::vector<int> priorIDs;
   for (const auto & pair : priorMap_) {
-    // std::cout << "Prior Landmark ID: " << pair.second.id
-    //           << " Position: (" << pair.second.x << ", " << pair.second.y << ")" << std::endl;
     priorLandmarks.push_back(pair.second);
+    priorIDs.push_back(pair.first);
   }
 
-  // 填充成本矩阵（使用距离作为成本）
+  // 创建成本矩阵（使用距离作为成本）
+  std::vector<std::vector<double>> costMatrix(n, std::vector<double>(m, 0.0));
+  
+  // 填充成本矩阵
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < m; j++) {
       costMatrix[i][j] = calculateDistance(detectedLandmarks[i], priorLandmarks[j]);
     }
   }
 
-  // 如果检测到的landmark数量少于先验landmark数量，需要扩展矩阵
-  int original_n = n;
-  if (n < m) {
-    for (int i = n; i < m; i++) {
-      costMatrix.push_back(std::vector<double>(m, std::numeric_limits<double>::max()));
-      n = m;       // 更新n的大小
-    }
-  }
-
-  // std::cout << "costMatrix size: " << costMatrix.size() << " x " << costMatrix[0].size() << std::endl;
-
   // 应用匈牙利算法
   HungarianAlgorithm ha(costMatrix);
   std::vector<int> assignment = ha.solve();
 
-  // std::cout << "匹配结果priorLandmarks索引: ";
-  // for (int idx : assignment) {
-  //     std::cout << idx << " ";
-  // }
-  // std::cout << std::endl;
-
   // 处理结果，应用距离阈值
-  std::vector<int> result(original_n, -1);   // 初始化为全部未匹配
+  std::vector<int> result(n, -1);
+  int validMatches = 0;
 
-  // 结束计时
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-  std::cout << "匹配耗时: " << duration.count() << " 毫秒" << std::endl;
-
-  for (int i = 0; i < original_n; i++) {
+  for (int i = 0; i < n; i++) {
     int matchedIndex = assignment[i];
-    // if (matchedIndex < priorLandmarks.size()) {
-    if (matchedIndex >= 0 && matchedIndex < static_cast<int>(priorLandmarks.size())) {
+    if (matchedIndex >= 0 && matchedIndex < m) {
       double distance = costMatrix[i][matchedIndex];
       if (distance <= distanceThreshold_) {
         result[i] = priorLandmarks[matchedIndex].id;
+        validMatches++;
         std::cout << "匹配成功: 检测点 (" << detectedLandmarks[i].x << ", "
                   << detectedLandmarks[i].y << ") 与先验点 ID "
                   << priorLandmarks[matchedIndex].id << " 距离 " << distance << std::endl;
       } else {
-        // 距离超过阈值，舍弃该匹配
         result[i] = -1;
         std::cout << "舍弃匹配: 检测点 (" << detectedLandmarks[i].x << ", "
                   << detectedLandmarks[i].y << ") 与先验点 ID "
                   << priorLandmarks[matchedIndex].id << " 距离 " << distance
                   << " 超过阈值 " << distanceThreshold_ << std::endl;
       }
+    } else {
+      std::cout << "未匹配: 检测点 (" << detectedLandmarks[i].x << ", "
+                << detectedLandmarks[i].y << ")" << std::endl;
     }
   }
 
-  // std::cout << "最终匹配结果ID: ";
-  // for (int id : result) {
-  //     std::cout << id << " ";
-  // }
-  // std::cout << std::endl;
+  // 结束计时
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+  std::cout << "匹配完成: " << validMatches << "/" << n << " 个检测点成功匹配，耗时: " 
+            << duration.count() << " 毫秒" << std::endl;
 
   return result;
 }
