@@ -109,7 +109,7 @@ def generate_launch_description():
         package='landmark_localization',
         executable='landmark_localization_node',
         name='landmark_localization_node',
-        output='screen',
+        output={'stdout': 'log', 'stderr': 'log'},
         parameters=[{
             'pbstream_file': LaunchConfiguration('pbstream_file'),
             'map_frame': LaunchConfiguration('map_frame'),
