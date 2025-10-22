@@ -586,6 +586,9 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
                                                  const std::vector<Landmark>& detected_landmarks,
                                                  geometry_msgs::msg::PoseStamped& robot_pose,
                                                  const std::string& lidar_frame) {
+  // 开始计时
+  auto start_time = std::chrono::high_resolution_clock::now();
+
   if (prior_landmarks.size() < min_landmarks_for_pose_ || detected_landmarks.size() < min_landmarks_for_pose_) {
     std::cerr << "Need at least " << min_landmarks_for_pose_ << " matched landmarks for accurate pose calculation, got " << detected_landmarks.size() << std::endl;
     return false;
@@ -745,7 +748,12 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
     double base_yaw = std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
                                 1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
     
-    std::cout << "Base link pose: x=" << base_to_map_tf.getOrigin().x() << ", y=" << base_to_map_tf.getOrigin().y() << ", theta=" << base_yaw << " rad" << std::endl;
+    std::cout << "解算位姿: x=" << base_to_map_tf.getOrigin().x() << ", y=" << base_to_map_tf.getOrigin().y() << ", theta=" << base_yaw << " rad" << std::endl;
+    
+    // 结束计时
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    std::cout << "解算耗时: " << duration.count() << " 毫秒" << std::endl;
     return true;
     
   } catch (const std::exception& e) {

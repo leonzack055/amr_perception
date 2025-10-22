@@ -234,8 +234,7 @@ std::vector<int> LandmarkMatcher::matchLandmarks(const std::vector<Landmark> & d
   // 结束计时
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-  std::cout << "匹配完成: " << validMatches << "/" << n << " 个检测点成功匹配，耗时: " 
-            << duration.count() << " 毫秒" << std::endl;
-
+  std::cout << "匹配完成: " << validMatches << "/" << n << " 个检测点成功匹配" << std::endl;
+  std::cout << "匹配耗时: " << duration.count() << " 毫秒" << std::endl;
   return result;
 }
