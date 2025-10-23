@@ -101,6 +101,12 @@ def generate_launch_description():
         description='Filter number: consecutive times required for same landmark combination'
     )
 
+    log_level_arg = DeclareLaunchArgument(
+        'log_level',
+        default_value='info',
+        description='Log level (debug, info, warn, error, fatal)'        
+    )
+
     # Get the package share directory
     pkg_share = get_package_share_directory('landmark_localization')
     
@@ -109,6 +115,7 @@ def generate_launch_description():
         package='landmark_localization',
         executable='landmark_localization_node',
         name='landmark_localization_node',
+        arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
         output={'stdout': 'log', 'stderr': 'log'},
         parameters=[{
             'pbstream_file': LaunchConfiguration('pbstream_file'),
@@ -157,5 +164,6 @@ def generate_launch_description():
         use_combine_arg,
         use_calculate_filter_arg,
         filter_num_arg,
+        log_level_arg,
         landmark_localization_node
     ])

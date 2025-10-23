@@ -115,7 +115,7 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
       double diameter = residual_real*2;
       CircleCenter tmp_results(reflector_center_.x,reflector_center_.y,microseconds_.count(),t_w,r_w,confidence,diameter,label);
       current_detections.push_back(tmp_results);
-      std::cout << "完成反光柱聚类检测" << std::endl;
+      // std::cout << "完成反光柱聚类检测" << std::endl;
     }
   }
 
@@ -242,7 +242,7 @@ std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & 
       double diameter = residual_real*2;
       CircleCenter tmp_results(reflector_center_.x,reflector_center_.y,microseconds_.count(),t_w,r_w,confidence,diameter,label);
       current_detections.push_back(tmp_results);
-      std::cout << "完成反光柱聚类检测" << std::endl;
+      // std::cout << "完成反光柱聚类检测" << std::endl;
     }
   }
 

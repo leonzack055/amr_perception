@@ -37,8 +37,6 @@ public:
 
   std::vector<int> solve()
   {
-    std::cout << "Starting Hungarian algorithm with matrix size: " << n << " x " << m << std::endl;
-
     for (int i = 1; i <= n; i++) {
       p[0] = i;
       int j0 = 0;
@@ -110,8 +108,6 @@ public:
         j0 = j1;
       } while (j0 != 0);
     }
-
-    std::cout << "Hungarian algorithm completed" << std::endl;
 
     // 构建结果：对于每个检测点，匹配的先验点索引
     std::vector<int> result(n, -1);

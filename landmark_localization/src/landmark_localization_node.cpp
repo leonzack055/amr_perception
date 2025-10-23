@@ -229,12 +229,10 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
     if (scan1_detected_posts.size() < min_landmarks_for_pose_ && use_lidar2_) {
       std::lock_guard<std::mutex> lock(scan2_mutex_);
       if (latest_scan2_msg_ != nullptr) {
-        std::cout << "Combining with scan2 data" << std::endl;
         // 处理scan2数据（变换到scan1坐标系）
         std::vector<Landmark> scan2_transformed_landmarks;
         if (transformScan2LandmarksToScan1Frame(latest_scan2_msg_, scan1_msg->header.stamp, 
                                               scan1_msg->header.frame_id, scan2_transformed_landmarks)) {
-          std::cout << "Successfully transformed " << scan2_transformed_landmarks.size() << " landmarks from scan2 to scan1 frame" << std::endl;
           all_detected_landmarks.insert(all_detected_landmarks.end(), 
                                       scan2_transformed_landmarks.begin(), 
                                       scan2_transformed_landmarks.end());
@@ -321,9 +319,7 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
         robot_pose.header.stamp = scan1_msg->header.stamp;
         robot_pose.header.frame_id = map_frame_;
         pose_pub_->publish(robot_pose);
-        std::cout << "Published robot pose in map frame from combined scan" << std::endl;
       }
-      std::cout << "Published " << matched_landmarks.size() << " matched landmarks from combined scan" << std::endl;
     }
     
   } catch (tf2::TransformException &ex) {
@@ -352,7 +348,7 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
     scan2.range_max = scan2_msg->range_max;
     
     auto scan2_detected_posts = post_detector_->detect(scan2);
-    std::cout << "Scan2 detected " << scan2_detected_posts.size() << " posts at original time" << std::endl;
+    std::cout << "Scan2 detected " << scan2_detected_posts.size() << " posts" << std::endl;
     
     if (scan2_detected_posts.empty()) {
       return false;
@@ -388,8 +384,6 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
       lm.rotation_weight = post.rotation_weight;
       transformed_landmarks.push_back(lm);
     }
-    
-    std::cout << "Transformed " << scan2_detected_posts.size() << " landmarks from scan2 frame to " << target_frame << " frame" << std::endl;
     return true;
     
   } catch (tf2::TransformException &ex) {
@@ -503,9 +497,7 @@ void LandmarkLocalizationNode::processLaserScan(const sensor_msgs::msg::LaserSca
         robot_pose.header.stamp = msg->header.stamp;
         robot_pose.header.frame_id = map_frame_;
         pose_pub_->publish(robot_pose);
-        std::cout << "Published robot pose in map frame from " << lidar_frame << std::endl;
       }
-      std::cout << "Published " << matched_landmarks.size() << " matched landmarks from " << lidar_frame << std::endl;
     }
     
   } catch (tf2::TransformException &ex) {
@@ -629,7 +621,7 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
     selected_detected_landmarks = std::move(temp_detected_landmarks);
     
     std::cout << "Selected " << min_landmarks_for_pose_ << " closest landmarks from " 
-              << detected_landmarks.size() << " detected landmarks" << std::endl;
+              << detected_landmarks.size() << " matched landmarks" << std::endl;
   }
 
   std::cout << "Selected closest landmarks id: ";
@@ -816,13 +808,7 @@ bool LandmarkLocalizationNode::checkFilterCondition(const std::vector<LandmarkIn
     return true;
   } else {
     std::cout << "Filter condition not satisfied: current consecutive count " << consecutive_count_ 
-              << " < filter_num=" << filter_num_ << ". Landmark IDs: ";
-    
-    // 打印当前地标ID组合
-    for (const auto& id : current_set) {
-      std::cout << id << " ";
-    }
-    std::cout << std::endl;
+              << " < filter_num=" << filter_num_ << std::endl;
     
     return false;
   }
