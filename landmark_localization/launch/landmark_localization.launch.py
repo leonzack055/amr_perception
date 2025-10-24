@@ -85,19 +85,19 @@ def generate_launch_description():
 
     use_combine_arg = DeclareLaunchArgument(
         'use_combine',
-        default_value='true',
+        default_value='false',
         description='Whether to use combined processing for lidar1 and lidar2'
     )
 
     use_calculate_filter_arg = DeclareLaunchArgument(
         'use_calculate_filter',
-        default_value='true',
+        default_value='false',
         description='Whether to use filtering for pose calculation'
     )
 
     filter_num_arg = DeclareLaunchArgument(
         'filter_num',
-        default_value='10',
+        default_value='5',
         description='Filter number: consecutive times required for same landmark combination'
     )
 
