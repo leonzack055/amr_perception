@@ -75,451 +75,384 @@ struct Vector2d {
     double dot(const Vector2d& other) const {
         return x * other.x + y * other.y;
     }
+    double squaredNorm() const {
+        return x*x + y*y;
+    }
 };
-// 直线结构体
-struct Line {
-    double a, b, c; // 直线方程: ax + by + c = 0
-    Vector2d center; // 中心点
-    double length;  // 直线长度估计
-    std::vector<Vector2d> points; // 原始点
+// 增强的车辆运动状态
+struct VehicleState {
+    Vector2d position;           // 车辆位置
+    Vector2d velocity;           // 车辆速度
+    float orientation;          // 朝向角度
+    float angular_velocity;     // 角速度
+    Vector2d center_point;       // 反光条中心点
+    Vector2d center_velocity;    // 中心点速度
     
-    Line(double a = 0, double b = 0, double c = 0, Vector2d center = Vector2d(), double len = 0) 
-        : a(a), b(b), c(c), center(center), length(len) {}
+    VehicleState() : orientation(0), angular_velocity(0) {}
 };
 
-// 雷达数据处理器
-class RadarDataProcessor {
+// 扩展卡尔曼滤波器 - 处理大角度运动
+class ExtendedKalmanFilter {
+private:
+    VehicleState state_;
+    
+    // 协方差矩阵 (简化版)
+    float pos_variance_[2][2];    // 位置协方差
+    float vel_variance_[2][2];    // 速度协方差  
+    float angle_variance_;
+    float angular_vel_variance_;
+    
+    const float process_noise_ = 1e-4f;
+    const float measurement_noise_ = 1e-3f;
+    bool initialized_;
+    
 public:
-    // 从雷达原始数据提取直线信息（改进版本）
-    static Line extractLineFromRadarData(const std::vector<Vector2d>& radar_points) {
-        if (radar_points.size() < 2) {
-            return Line();
-        }
-        
-        // 计算中心点
-        Vector2d center(0, 0);
-        for (const auto& point : radar_points) {
-            center.x += point.x;
-            center.y += point.y;
-        }
-        center.x /= radar_points.size();
-        center.y /= radar_points.size();
-        
-        // 计算边界点和长度估计
-        double max_dist = 0;
-        Vector2d farthest1, farthest2;
-        for (const auto& p1 : radar_points) {
-            for (const auto& p2 : radar_points) {
-                double dist = (p1 - p2).length();
-                if (dist > max_dist) {
-                    max_dist = dist;
-                    farthest1 = p1;
-                    farthest2 = p2;
-                }
+    ExtendedKalmanFilter() : angle_variance_(1.0f), angular_vel_variance_(1.0f), initialized_(false) {
+        // 初始化协方差矩阵
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                pos_variance_[i][j] = (i == j) ? 1.0f : 0.0f;
+                vel_variance_[i][j] = (i == j) ? 1.0f : 0.0f;
             }
         }
-        
-        // 使用RANSAC-like方法拟合直线，提高鲁棒性
-        Line best_line = fitLineRobust(radar_points, center);
-        best_line.points = radar_points;
-        best_line.length = max_dist;
-        
-        return best_line;
     }
     
-    // 鲁棒直线拟合
-    static Line fitLineRobust(const std::vector<Vector2d>& points, const Vector2d& center) {
-        if (points.size() < 2) return Line();
+    void initialize(const Vector2d& position, float orientation) {
+        state_.position = position;
+        state_.orientation = orientation;
+        state_.velocity = Vector2d(0, 0);
+        state_.angular_velocity = 0;
+        state_.center_point = position;
+        state_.center_velocity = Vector2d(0, 0);
         
-        // 方法1: 使用PCA主成分分析
-        double sum_xx = 0, sum_xy = 0, sum_yy = 0;
-        for (const auto& p : points) {
-            double dx = p.x - center.x;
-            double dy = p.y - center.y;
-            sum_xx += dx * dx;
-            sum_xy += dx * dy;
-            sum_yy += dy * dy;
+        initialized_ = true;
+    }
+    
+    // 预测步骤 - 使用自行车模型
+    void predict(float dt) {
+        if (!initialized_) return;
+        
+        // 自行车运动模型预测
+        predictBicycleModel(dt);
+        
+        // 增加过程噪声
+        for (int i = 0; i < 2; ++i) {
+            pos_variance_[i][i] += process_noise_;
+            vel_variance_[i][i] += process_noise_;
+        }
+        angle_variance_ += process_noise_;
+        angular_vel_variance_ += process_noise_;
+    }
+    
+    // 更新步骤
+    void update(const Vector2d& measured_center, float measured_orientation, float dt) {
+        if (!initialized_) {
+            initialize(measured_center, measured_orientation);
+            return;
         }
         
-        // 计算特征向量（主方向）
-        double theta = 0.5 * std::atan2(2 * sum_xy, sum_xx - sum_yy);
+        // 中心点更新
+        updateCenter(measured_center, dt);
         
-        // 直线方向向量
-        Vector2d dir(std::cos(theta), std::sin(theta));
-        
-        // 转换为一般式: -sin(theta)*x + cos(theta)*y + (sin(theta)*cx - cos(theta)*cy) = 0
-        double a = -dir.y;
-        double b = dir.x;
-        double c = dir.y * center.x - dir.x * center.y;
-        
-        return Line(a, b, c, center);
+        // 角度更新  
+        updateOrientation(measured_orientation, dt);
     }
     
-    // 计算垂直于直线的方向，并确保朝向雷达（改进版本）
-    static double calculatePerpendicularDirection(const Line& line, const Vector2d& radar_position = Vector2d(0, 0)) {
-        // 直线的法向量有两个可能方向: (a, b) 和 (-a, -b)
-        Vector2d normal_vector(line.a, line.b);
-        normal_vector = normal_vector.normalized();
-        
-        // 方法1: 使用点云密度判断（更稳定）
-        double density_score1 = calculateDirectionScore(line.points, normal_vector, radar_position);
-        double density_score2 = calculateDirectionScore(line.points, normal_vector * (-1.0), radar_position);
-        
-        // 选择得分更高的方向（更可能朝向雷达的方向）
-        Vector2d final_direction = (density_score1 > density_score2) ? normal_vector : normal_vector * (-1.0);
-        
-        // 计算方向角度
-        double angle = std::atan2(final_direction.y, final_direction.x);
-        
-        return angle;
-    }
+    const VehicleState& getState() const { return state_; }
     
 private:
-    // 计算方向得分（基于点云密度和雷达位置）
-    static double calculateDirectionScore(const std::vector<Vector2d>& points, 
-                                         const Vector2d& direction, 
-                                         const Vector2d& radar_position) {
-        if (points.empty()) return 0;
+    void predictBicycleModel(float dt) {
+        // 简化的自行车模型
+        // 假设车辆绕后轴旋转
         
-        double score = 0;
-        int count = 0;
+        // 位置预测
+        state_.position = state_.position + state_.velocity * dt;
         
-        // 计算中心点
-        Vector2d center(0, 0);
-        for (const auto& p : points) {
-            center = center + p;
-        }
-        center = center / points.size();
+        // 角度预测
+        state_.orientation += state_.angular_velocity * dt;
+        state_.orientation = normalizeAngle(state_.orientation);
         
-        // 在给定方向上采样点，计算与雷达的距离
-        for (const auto& point : points) {
-            // 测试点沿着方向移动一小段距离
-            Vector2d test_point = point + direction * 0.1;
-            double dist_to_radar = (test_point - radar_position).length();
-            
-            // 距离越小，得分越高
-            score += 1.0 / (1.0 + dist_to_radar);
-            count++;
-        }
+        // 中心点预测（相对于车辆位置）
+        float wheelbase = 2.5f; // 假设轴距
+        Vector2d local_center(0, wheelbase * 0.5f); // 假设中心在前轴和后轴之间
         
-        return (count > 0) ? score / count : 0;
-    }
-};
-
-// 增强的角度卡尔曼滤波器
-class EnhancedAngleKalmanFilter {
-private:
-    struct State {
-        double angle;          // 朝向角
-        double angular_velocity; // 角速度
-        double angular_acceleration; // 角加速度
-    };
-    
-    State state;
-    double angle_variance;
-    double angular_velocity_variance;
-    double angular_acceleration_variance;
-    double process_noise;
-    double measurement_noise;
-    bool is_initialized;
-    double max_angle_change;
-    
-    // 历史数据用于平滑
-    std::deque<double> angle_history;
-    const size_t history_size = 5;
-    
-public:
-    EnhancedAngleKalmanFilter(double max_change_deg = 15.0,  // 更严格的限制
-                            double proc_noise = 0.0001,     // 更小的过程噪声
-                            double meas_noise = 0.005)      // 更小的测量噪声
-        : process_noise(proc_noise), measurement_noise(meas_noise), 
-          is_initialized(false), max_angle_change(max_change_deg * M_PI / 180.0) {
-        state = {0, 0, 0};
-        angle_variance = 1.0;
-        angular_velocity_variance = 0.1;
-        angular_acceleration_variance = 0.01;
+        // 将局部坐标转换到世界坐标系
+        float cos_theta = std::cos(state_.orientation);
+        float sin_theta = std::sin(state_.orientation);
+        
+        state_.center_point = Vector2d(
+            state_.position.x + local_center.x * cos_theta - local_center.y * sin_theta,
+            state_.position.y + local_center.x * sin_theta + local_center.y * cos_theta
+        );
     }
     
-    double normalizeAngle(double angle) {
-        while (angle > M_PI) angle -= 2.0 * M_PI;
-        while (angle < -M_PI) angle += 2.0 * M_PI;
-        return angle;
-    }
-    
-    void initialize(double initial_angle) {
-        state.angle = normalizeAngle(initial_angle);
-        state.angular_velocity = 0;
-        state.angular_acceleration = 0;
-        angle_variance = 0.01;  // 更小的初始方差
-        angular_velocity_variance = 0.001;
-        angular_acceleration_variance = 0.0001;
+    void updateCenter(const Vector2d& measured_center, float dt) {
+        // 计算创新向量
+        Vector2d innovation = measured_center - state_.center_point;
         
-        angle_history.clear();
-        angle_history.push_back(state.angle);
-        
-        is_initialized = true;
-    }
-    
-    void predict(double dt) {
-        if (!is_initialized) return;
-        
-        // 更精确的状态预测（恒定角加速度模型）
-        state.angle += state.angular_velocity * dt + 0.5 * state.angular_acceleration * dt * dt;
-        state.angle = normalizeAngle(state.angle);
-        state.angular_velocity += state.angular_acceleration * dt;
-        
-        // 协方差预测
-        double dt2 = dt * dt;
-        double dt3 = dt2 * dt;
-        
-        angle_variance += dt2 * angular_velocity_variance + 0.25 * dt3 * angular_acceleration_variance + process_noise;
-        angular_velocity_variance += dt * angular_acceleration_variance + process_noise;
-    }
-    
-    bool update(double measurement, double dt) {
-        if (!is_initialized) {
-            initialize(measurement);
-            return true;
-        }
-        
-        double normalized_measurement = normalizeAngle(measurement);
-        
-        // 改进的野值检测：使用历史趋势预测
-        double predicted_angle = state.angle + state.angular_velocity * dt;
-        double angle_diff = normalizeAngle(normalized_measurement - predicted_angle);
-        
-        // 动态阈值：高速时允许更大变化
-        double dynamic_threshold = max_angle_change * (1.0 + std::abs(state.angular_velocity) * 0.1);
-        
-        if (std::abs(angle_diff) > dynamic_threshold) {
-            return false; // 野值，不更新
-        }
-        
-        // 卡尔曼增益
-        double kalman_gain = angle_variance / (angle_variance + measurement_noise);
+        // 简化的卡尔曼增益
+        float gain = 0.3f; // 固定增益，实际应该基于协方差
         
         // 状态更新
-        state.angle = normalizeAngle(state.angle + kalman_gain * angle_diff);
+        state_.center_point = state_.center_point + innovation * gain;
+        state_.center_velocity = innovation * (gain / dt);
         
-        // 协方差更新
-        angle_variance = (1.0 - kalman_gain) * angle_variance;
-        
-        // 更新角速度和角加速度估计
-        if (dt > 1e-6) {
-            // 使用历史数据平滑角速度估计
-            angle_history.push_back(state.angle);
-            if (angle_history.size() > history_size) {
-                angle_history.pop_front();
-            }
-            
-            // 基于多个历史点计算角速度
-            if (angle_history.size() >= 3) {
-                double weighted_velocity = 0;
-                double total_weight = 0;
-                
-                for (size_t i = 1; i < angle_history.size(); ++i) {
-                    double delta_angle = normalizeAngle(angle_history[i] - angle_history[i-1]);
-                    double weight = i; // 越近的点权重越大
-                    weighted_velocity += (delta_angle / dt) * weight;
-                    total_weight += weight;
-                }
-                
-                if (total_weight > 0) {
-                    double new_angular_velocity = weighted_velocity / total_weight;
-                    // 低通滤波
-                    double alpha = 0.3;
-                    state.angular_velocity = (1 - alpha) * state.angular_velocity + alpha * new_angular_velocity;
-                }
-            }
-        }
-        
-        return true;
+        // 更新车辆位置（基于中心点和朝向）
+        updateVehiclePositionFromCenter();
     }
     
-    // 获取平滑后的角度（使用移动平均）
-    double getSmoothedAngle() const {
-        if (angle_history.empty()) return state.angle;
+    void updateOrientation(float measured_orientation, float dt) {
+        float innovation = normalizeAngle(measured_orientation - state_.orientation);
         
-        // 使用向量平均方法计算角度平均值
-        double sum_sin = 0, sum_cos = 0;
-        for (double angle : angle_history) {
-            sum_sin += std::sin(angle);
-            sum_cos += std::cos(angle);
-        }
+        // 动态增益：大角度变化时使用较小增益
+        float gain = (std::abs(innovation) > 0.5f) ? 0.1f : 0.3f;
         
-        return std::atan2(sum_sin, sum_cos);
+        state_.orientation = normalizeAngle(state_.orientation + innovation * gain);
+        state_.angular_velocity = innovation * (gain / dt);
     }
     
-    double getAngle() const { 
-        return getSmoothedAngle(); // 返回平滑后的角度
+    void updateVehiclePositionFromCenter() {
+        // 根据中心点和朝向反推车辆位置
+        float wheelbase = 2.5f;
+        Vector2d local_center(0, wheelbase * 0.5f);
+        
+        float cos_theta = std::cos(state_.orientation);
+        float sin_theta = std::sin(state_.orientation);
+        
+        state_.position = Vector2d(
+            state_.center_point.x - (local_center.x * cos_theta - local_center.y * sin_theta),
+            state_.center_point.y - (local_center.x * sin_theta + local_center.y * cos_theta)
+        );
     }
     
-    double getAngularVelocity() const { return state.angular_velocity; }
-    bool initialized() const { return is_initialized; }
-};
-
-// 多帧一致性检查器
-class ConsistencyChecker {
-private:
-    std::deque<double> recent_angles;
-    const size_t check_window = 3;
-    double max_variance;
-    
-public:
-    ConsistencyChecker(double max_var_deg = 5.0) 
-        : max_variance(max_var_deg * M_PI / 180.0) {}
-    
-    bool checkConsistency(double new_angle) {
-        recent_angles.push_back(new_angle);
-        if (recent_angles.size() > check_window) {
-            recent_angles.pop_front();
-        }
-        
-        if (recent_angles.size() < check_window) return true;
-        
-        // 计算角度方差
-        double mean_sin = 0, mean_cos = 0;
-        for (double angle : recent_angles) {
-            mean_sin += std::sin(angle);
-            mean_cos += std::cos(angle);
-        }
-        mean_sin /= recent_angles.size();
-        mean_cos /= recent_angles.size();
-        
-        double variance = 1.0 - std::sqrt(mean_sin * mean_sin + mean_cos * mean_cos);
-        
-        return variance < max_variance;
-    }
-    
-    void reset() {
-        recent_angles.clear();
+    float normalizeAngle(float angle) {
+        while (angle > M_PI) angle -= 2.0f * M_PI;
+        while (angle < -M_PI) angle += 2.0f * M_PI;
+        return angle;
     }
 };
 
-// 主车辆朝向估计器（改进版本）
-class StableVehicleOrientationEstimator {
+// 大角度运动处理器
+class LargeAngleMotionProcessor {
 private:
-    std::unique_ptr<EnhancedAngleKalmanFilter> angle_filter;
-    ConsistencyChecker consistency_checker;
-    double last_timestamp;
-    bool first_frame;
-    int consecutive_outliers;
-    const int max_consecutive_outliers = 3; // 更严格
-    Vector2d radar_position;
+    ExtendedKalmanFilter ekf_;
+    Vector2d radar_position_;
     
-    // 历史结果用于平滑
-    std::deque<double> smoothed_angles;
-    const size_t smooth_window = 3;
+    // 运动状态检测
+    bool is_turning_;
+    float turning_threshold_;
+    std::deque<float> recent_angular_velocities_;
+    
+    // 历史状态用于插值
+    std::deque<VehicleState> state_history_;
+    const int history_size_ = 10;
     
 public:
-    StableVehicleOrientationEstimator(const Vector2d& radar_pos = Vector2d(0, 0)) 
-        : last_timestamp(0.0), first_frame(true), consecutive_outliers(0), 
-          radar_position(radar_pos) {
-        angle_filter = std::make_unique<EnhancedAngleKalmanFilter>();
-    }
+    LargeAngleMotionProcessor(const Vector2d& radar_pos = Vector2d(0, 0)) 
+        : radar_position_(radar_pos), is_turning_(false), turning_threshold_(0.3f) {}
     
-    struct OrientationResult {
-        Vector2d center_point;
-        double orientation_angle; // 弧度
-        double orientation_angle_deg; // 度
-        bool is_stable;
-        std::string status;
-        Vector2d direction_vector;
-        double confidence; // 置信度 [0,1]
+    struct StableResult {
+        Vector2d stable_center;
+        float stable_orientation;
+        Vector2d stable_direction;
+        bool is_turning;
+        float turning_intensity;
+        float confidence;
     };
     
-    OrientationResult processRadarData(const std::vector<Vector2d>& radar_points, double timestamp) {
-        OrientationResult result;
-        result.confidence = 1.0;
+    StableResult processWithLargeAngleSupport(const std::vector<Vector2d>& radar_points, 
+                                            float dt) {
+        StableResult result;
+        result.confidence = 0;
         
-        // 从雷达数据提取直线信息
-        Line detected_line = RadarDataProcessor::extractLineFromRadarData(radar_points);
-        
-        // 计算垂直于直线且朝向雷达的方向
-        double raw_angle = RadarDataProcessor::calculatePerpendicularDirection(detected_line, radar_position);
-        
-        if (first_frame) {
-            angle_filter->initialize(raw_angle);
-            last_timestamp = timestamp;
-            first_frame = false;
-            
-            result.center_point = detected_line.center;
-            result.orientation_angle = raw_angle;
-            result.orientation_angle_deg = raw_angle * 180.0 / M_PI;
-            result.direction_vector = Vector2d(std::cos(raw_angle), std::sin(raw_angle));
-            result.is_stable = true;
-            result.status = "Initialized";
-            
-            smoothed_angles.push_back(raw_angle);
+        if (radar_points.size() < 3) {
             return result;
         }
         
-        double dt = timestamp - last_timestamp;
-        last_timestamp = timestamp;
+        // 1. 提取当前帧的原始信息
+        Vector2d raw_center = computeCenter(radar_points);
+        //float raw_orientation = computeOrientation(radar_points, radar_position_);
+        float raw_orientation = computePerpendicularOrientation(radar_points, radar_position_);
+        // 2. 检测大角度运动
+        detectTurningMotion(raw_orientation, dt);
         
-        if (dt <= 0 || dt > 1.0) {
-            dt = 0.033;
-        }
+        // 3. EKF预测
+        ekf_.predict(dt);
         
-        // 预测步骤
-        angle_filter->predict(dt);
+        // 4. EKF更新（使用自适应参数）
+        ekf_.update(raw_center, raw_orientation, dt);
         
-        // 一致性检查
-        bool is_consistent = consistency_checker.checkConsistency(raw_angle);
+        // 5. 获取稳定状态
+        const VehicleState& state = ekf_.getState();
         
-        // 更新步骤（只有通过一致性检查才更新）
-        bool update_success = false;
-        if (is_consistent) {
-            update_success = angle_filter->update(raw_angle, dt);
-        }
-        
-        // 处理异常情况
-        if (!is_consistent || !update_success) {
-            consecutive_outliers++;
-            result.status = "Unstable: " + std::string(!is_consistent ? "Inconsistent" : "Outlier") + 
-                          " (" + std::to_string(consecutive_outliers) + " consecutive)";
-            result.is_stable = (consecutive_outliers <= max_consecutive_outliers);
-            result.confidence = std::max(0.0, 1.0 - consecutive_outliers * 0.3);
+        // 6. 根据运动状态调整输出
+        if (is_turning_) {
+            result = processTurningState(state, dt);
         } else {
-            consecutive_outliers = 0;
-            result.status = "Stable";
-            result.is_stable = true;
+            result = processStraightState(state);
         }
         
-        // 获取滤波后的结果
-        double filtered_angle = angle_filter->getAngle();
-        
-        // 最终平滑：使用移动平均
-        smoothed_angles.push_back(filtered_angle);
-        if (smoothed_angles.size() > smooth_window) {
-            smoothed_angles.pop_front();
-        }
-        
-        // 计算最终平滑角度
-        double final_angle = computeSmoothedAngle(smoothed_angles);
-        
-        result.center_point = detected_line.center;
-        result.orientation_angle = final_angle;
-        result.orientation_angle_deg = final_angle * 180.0 / M_PI;
-        result.direction_vector = Vector2d(std::cos(final_angle), std::sin(final_angle));
+        // 7. 保存历史状态
+        saveStateHistory(state);
         
         return result;
     }
     
 private:
-    double computeSmoothedAngle(const std::deque<double>& angles) {
-        if (angles.empty()) return 0;
+    Vector2d computeCenter(const std::vector<Vector2d>& points) {
+        Vector2d center(0, 0);
+        for (const auto& p : points) center = center + p;
+        return center * (1.0f / points.size());
+    }
+    float computePerpendicularOrientation(const std::vector<Vector2d>& points, const Vector2d& radar_pos) {
+        Vector2d center = computeCenter(points);
         
-        double sum_sin = 0, sum_cos = 0;
-        for (double angle : angles) {
-            sum_sin += std::sin(angle);
-            sum_cos += std::cos(angle);
+        // 使用PCA计算反光条的主方向
+        float sum_xx = 0, sum_xy = 0, sum_yy = 0;
+        for (const auto& p : points) {
+            Vector2d vec = p - center;
+            sum_xx += vec.x * vec.x;
+            sum_xy += vec.x * vec.y;
+            sum_yy += vec.y * vec.y;
         }
         
-        return std::atan2(sum_sin, sum_cos);
+        // 计算反光条的主方向（直线方向）
+        Vector2d line_direction(sum_xy, sum_yy - sum_xx);
+        line_direction = line_direction.normalized();
+        
+        // 计算垂直于反光条的两个可能方向
+        Vector2d normal1(-line_direction.y, line_direction.x);  // 逆时针旋转90度
+        Vector2d normal2(line_direction.y, -line_direction.x);  // 顺时针旋转90度
+        
+        // 选择指向雷达的方向
+        Vector2d to_radar = radar_pos - center;
+        Vector2d final_normal = (normal1.dot(to_radar) > normal2.dot(to_radar)) ? normal1 : normal2;
+        
+        return std::atan2(final_normal.y, final_normal.x);
+    }
+    float computeOrientation(const std::vector<Vector2d>& points, const Vector2d& radar_pos) {
+        // 简化的方向计算
+        Vector2d center = computeCenter(points);
+        
+        // 使用PCA计算主方向
+        float sum_xx = 0, sum_xy = 0, sum_yy = 0;
+        for (const auto& p : points) {
+            Vector2d vec = p - center;
+            sum_xx += vec.x * vec.x;
+            sum_xy += vec.x * vec.y;
+            sum_yy += vec.y * vec.y;
+        }
+        
+        // 计算法线方向（指向雷达）
+        Vector2d normal(sum_xy, sum_yy - sum_xx);
+        normal = normal.normalized();
+        
+        // 确保指向雷达
+        Vector2d to_radar = radar_pos - center;
+        if (normal.dot(to_radar) < 0) {
+            normal = normal * (-1.0f);
+        }
+        
+        return std::atan2(normal.y, normal.x);
+    }
+    
+    void detectTurningMotion(float current_orientation, float dt) {
+        // 保存最近的角速度
+        static float last_orientation = current_orientation;
+        float angular_velocity = normalizeAngle(current_orientation - last_orientation) / dt;
+        last_orientation = current_orientation;
+        
+        recent_angular_velocities_.push_back(angular_velocity);
+        if (recent_angular_velocities_.size() > 5) {
+            recent_angular_velocities_.pop_front();
+        }
+        
+        // 计算平均角速度
+        float avg_angular_velocity = 0;
+        for (float w : recent_angular_velocities_) {
+            avg_angular_velocity += w;
+        }
+        avg_angular_velocity /= recent_angular_velocities_.size();
+        
+        // 检测转向状态
+        is_turning_ = std::abs(avg_angular_velocity) > turning_threshold_;
+    }
+    
+    StableResult processTurningState(const VehicleState& state, float dt) {
+        StableResult result;
+        
+        // 转向状态下使用更强的平滑和预测
+        result.stable_center = state.center_point;
+        result.stable_orientation = state.orientation;
+        result.stable_direction = Vector2d(std::cos(state.orientation), std::sin(state.orientation));
+        result.is_turning = true;
+        result.turning_intensity = std::abs(state.angular_velocity);
+        
+        // 转向时置信度降低
+        result.confidence = std::max(0.3f, 1.0f - result.turning_intensity * 0.5f);
+        
+        return result;
+    }
+    
+    StableResult processStraightState(const VehicleState& state) {
+        StableResult result;
+        
+        // 直线状态下使用标准处理
+        result.stable_center = state.center_point;
+        result.stable_orientation = state.orientation;
+        result.stable_direction = Vector2d(std::cos(state.orientation), std::sin(state.orientation));
+        result.is_turning = false;
+        result.turning_intensity = 0;
+        result.confidence = 0.9f;
+        
+        return result;
+    }
+    
+    void saveStateHistory(const VehicleState& state) {
+        state_history_.push_back(state);
+        if (state_history_.size() > history_size_) {
+            state_history_.pop_front();
+        }
+    }
+    
+    float normalizeAngle(float angle) {
+        while (angle > M_PI) angle -= 2.0f * M_PI;
+        while (angle < -M_PI) angle += 2.0f * M_PI;
+        return angle;
     }
 };
-
+// 并查集用于优化DBSCAN
+class UnionFind {
+private:
+    std::vector<int> parent;
+    std::vector<int> rank;
+public:
+    UnionFind(int n) : parent(n), rank(n, 0) {
+        for (int i = 0; i < n; ++i) parent[i] = i;
+    }
+    
+    int find(int x) {
+        if (parent[x] != x) {
+            parent[x] = find(parent[x]);
+        }
+        return parent[x];
+    }
+    
+    void unite(int x, int y) {
+        int rootX = find(x);
+        int rootY = find(y);
+        if (rootX != rootY) {
+            if (rank[rootX] < rank[rootY]) {
+                parent[rootX] = rootY;
+            } else if (rank[rootX] > rank[rootY]) {
+                parent[rootY] = rootX;
+            } else {
+                parent[rootY] = rootX;
+                rank[rootX]++;
+            }
+        }
+    }
+};
 class ReflectorDetector : public rclcpp::Node
 {
 public:
@@ -543,8 +476,8 @@ public:
         subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
             "/scan", 1, std::bind(&ReflectorDetector::scan_callback, this, std::placeholders::_1));
 
-        publisher_debug = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-            "/charger_relative_pose_debug", 1);
+        /*publisher_debug = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+            "/charger_relative_pose_debug1", 1);*/
         
         publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
             "/charger_relative_pose", 1);
@@ -556,8 +489,8 @@ private:
 
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr subscription_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher_;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher_debug;
-    StableVehicleOrientationEstimator estimator;
+    //rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher_debug;
+    LargeAngleMotionProcessor estimator;
     
     // 角度归一化到 [-π, π]
     double normalizeAngle(double angle) {
@@ -605,187 +538,169 @@ private:
         result_.push_back(theta_reflect_frame);
         return result_;
     }
-
-    // 统计离群点过滤
-    std::vector<Vector2d> statistical_outlier_filter(const std::vector<Vector2d>& points,int points_num)
-    {
-        int mean_k = this->get_parameter("stat_mean_k").as_int();
-        double std_threshold = this->get_parameter("stat_std_threshold").as_double();
-        if (int(points.size()) < points_num) return points;
-
-        std::vector<double> mean_distances;
-        for (const auto& p : points) {
-            std::vector<double> distances;
-            for (const auto& other : points) {
-                if (&p != &other) {
-                    distances.push_back((p - other).norm());
-                }
-            }
-            std::sort(distances.begin(), distances.end());
-            double mean_dist = 0.0;
-            int count = std::min(mean_k, static_cast<int>(distances.size()));
-            for (int i = 0; i < count; ++i) {
-                mean_dist += distances[i];
-            }
-            mean_dist /= count;
-            mean_distances.push_back(mean_dist);
-        }
-
-        double mean = std::accumulate(mean_distances.begin(), mean_distances.end(), 0.0) / mean_distances.size();
-        double std_dev = 0.0;
-        for (double d : mean_distances) {
-            std_dev += (d - mean) * (d - mean);
-        }
-        std_dev = sqrt(std_dev / mean_distances.size());
-
-        std::vector<Vector2d> filtered;
-        for (size_t i = 0; i < points.size(); ++i) {
-            if (mean_distances[i] < mean + std_threshold * std_dev) {
-                filtered.push_back(points[i]);
-            }
-        }
-        return filtered;
-    }
     // 计算两点之间的欧氏距离
     double distanceTo(const Vector2d& current_points,const Vector2d& other){
         double dx = current_points.x - other.x;
         double dy = current_points.y - other.y;
         return std::sqrt(dx * dx + dy * dy);
     }
-    // 计算点集的 k 近邻距离
-	std::vector<double> compute_knn_distances(const std::vector<Vector2d>& points, int k) {
-	    std::vector<double> avg_distances(points.size(), 0.0);
-	    
-	    for (size_t i = 0; i < points.size(); i++) {
-			std::vector<double> distances;
-			
-			// 计算当前点到所有其他点的距离
-			for (size_t j = 0; j < points.size(); j++) {
-				if (i != j) {
-				    distances.push_back(distanceTo(points[i],points[j]));
-				}
-			}
-			
-			// 排序距离
-			std::sort(distances.begin(), distances.end());
-			
-			// 取前 k 个最小距离的平均值
-			double sum = 0.0;
-			int count = std::min(k, static_cast<int>(distances.size()));
-			for (int idx = 0; idx < count; idx++) {
-				sum += distances[idx];
-			}
-			
-			avg_distances[i] = sum / count;
-	    }
-	    
-	    return avg_distances;
-	}
 
-	// 计算向量的中位数
-	double compute_median(std::vector<double> values) {
-	    if (values.empty()) {
-		return 0.0;
-	    }
-	    
-	    std::sort(values.begin(), values.end());
-	    size_t n = values.size();
-	    
-	    if (n % 2 == 0) {
-		return (values[n/2 - 1] + values[n/2]) / 2.0;
-	    } else {
-		return values[n/2];
-	    }
-	}
+    // 轻量级EPS自适应
+    double compute_fast_adaptive_eps(const std::vector<Vector2d>& points, double base_eps) {
+        if (points.size() < 10) return base_eps;
+        
+        // 快速计算点云密度
+        Vector2d min_pt = points[0], max_pt = points[0];
+        for (const auto& p : points) {
+            min_pt.x = std::min(min_pt.x, p.x);
+            min_pt.y = std::min(min_pt.y, p.y);
+            max_pt.x = std::max(max_pt.x, p.x);
+            max_pt.y = std::max(max_pt.y, p.y);
+        }
+        
+        double area = (max_pt.x - min_pt.x) * (max_pt.y - min_pt.y);
+        double density = points.size() / (area + 1e-6);
+        
+        // 简单密度自适应
+        double adaptive_factor = 1.0;
+        if (density < 0.1) adaptive_factor = 1.3;  // 稀疏点云，增大EPS
+        else if (density > 10.0) adaptive_factor = 0.7;  // 密集点云，减小EPS
+        
+        return base_eps * adaptive_factor;
+    }
 
-	// DBSCAN 聚类算法实现
-	std::vector<int> dbscan(const std::vector<Vector2d>& points, double eps, int min_samples) {
-		std::vector<int> labels(points.size(), -1); // -1 表示噪声点
-		int cluster_id = 0;
-		
-		for (size_t i = 0; i < points.size(); i++) {
-		    if (labels[i] != -1) {
-		        continue; // 已经处理过的点
-		    }
-		    
-		    // 找到当前点的邻域点
-		    std::vector<size_t> neighbors;
-		    for (size_t j = 0; j < points.size(); j++) {
-		        if (i != j && distanceTo(points[i],points[j]) <= eps) {
-		            neighbors.push_back(j);
-		        }
-		    }
-		    
-		    // 检查是否为核心点
-		    if (int(neighbors.size()) < min_samples) {
-		        labels[i] = -1; // 标记为噪声点
-		        continue;
-		    }
-		    
-		    // 开始新的聚类
-		    cluster_id++;
-		    labels[i] = cluster_id;
-		    
-		    // 使用队列扩展聚类
-		    std::queue<size_t> cluster_queue;
-		    for (size_t neighbor : neighbors) {
-		        cluster_queue.push(neighbor);
-		    }
-		    
-		    while (!cluster_queue.empty()) {
-		        size_t current_idx = cluster_queue.front();
-		        cluster_queue.pop();
-		        
-		        if (labels[current_idx] == -1) {
-		            labels[current_idx] = cluster_id;
-		        } else if (labels[current_idx] != 0) {
-		            continue; // 已经处理过的点
-		        }
-		        
-		        labels[current_idx] = cluster_id;
-		        
-		        // 找到当前点的邻域点
-		        std::vector<size_t> current_neighbors;
-		        for (size_t j = 0; j < points.size(); j++) {
-		            if (current_idx != j && distanceTo(points[current_idx],points[j]) <= eps) {
-		                current_neighbors.push_back(j);
-		            }
-		        }
-		        
-		        // 如果当前点也是核心点，将其邻域点加入队列
-		        if (int(current_neighbors.size()) >= min_samples) {
-		            for (size_t neighbor : current_neighbors) {
-		                if (labels[neighbor] == -1 || labels[neighbor] == 0) {
-		                    cluster_queue.push(neighbor);
-		                }
-		            }
-		        }
-		    }
-		}
-		
-		return labels;
-	}
-
+    // 预计算网格邻域关系
+    std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> 
+    precompute_grid_neighbors(const std::map<std::pair<int, int>, std::vector<int>>& grid) {
+        std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> neighbors;
+        
+        for (const auto& [grid_coord, _] : grid) {
+            auto [x, y] = grid_coord;
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    neighbors[{x, y}].push_back({x + dx, y + dy});
+                }
+            }
+        }
+        return neighbors;
+    }
+  
 	// 自适应 DBSCAN 聚类
 	std::vector<int> adaptive_dbscan(const std::vector<Vector2d>& points) {
 		int min_cluster_points = this->get_parameter("min_cluster_points").as_int();
 		double cluster_eps = this->get_parameter("cluster_eps").as_double();
-		if (int(points.size()) < min_cluster_points) {
+        if (int(points.size()) < min_cluster_points) {
 		    return std::vector<int>(points.size(), -1);
 		}
 		
-		// 计算 k 近邻距离
-		int k = 4;
-		std::vector<double> avg_distances = compute_knn_distances(points, k);
-		
-		// 计算中位数
-		double median_eps = compute_median(avg_distances);
-		
-		// 确定最终的 eps 值
-		double eps = std::max(cluster_eps, median_eps);
-		//RCLCPP_INFO(this->get_logger(), "info eps: %f", eps);
-		// 执行 DBSCAN 聚类
-		return dbscan(points, eps, min_cluster_points);
+		double base_eps = cluster_eps;
+        
+        // 1. 快速EPS自适应（避免复杂计算）
+        double eps = compute_fast_adaptive_eps(points, base_eps);
+        
+        // 2. 保持网格划分，但优化搜索策略
+        double grid_size = eps;
+        std::map<std::pair<int, int>, std::vector<int>> grid;
+        
+        for (size_t i = 0; i < points.size(); ++i) {
+            int grid_x = static_cast<int>(points[i].x / grid_size);
+            int grid_y = static_cast<int>(points[i].y / grid_size);
+            grid[{grid_x, grid_y}].push_back(i);
+        }
+        
+        // 3. 优化：预计算网格邻域关系
+        auto grid_neighbors = precompute_grid_neighbors(grid);
+        
+        UnionFind uf(points.size());
+        std::vector<bool> is_core(points.size(), false);
+        std::vector<int> neighbor_counts(points.size(), 0);
+        
+        // 4. 第一阶段：快速计数
+        #pragma omp parallel for if(points.size() > 100)
+        for (size_t i = 0; i < points.size(); ++i) {
+            const auto& current_point = points[i];
+            int grid_x = static_cast<int>(current_point.x / grid_size);
+            int grid_y = static_cast<int>(current_point.y / grid_size);
+            
+            int count = 0;
+            // 只搜索相邻的9个网格
+            for (const auto& neighbor_grid : grid_neighbors.at({grid_x, grid_y})) {
+                auto it = grid.find(neighbor_grid);
+                if (it != grid.end()) {
+                    for (int idx : it->second) {
+                        if ((current_point - points[idx]).squaredNorm() < eps * eps) {
+                            count++;
+                            if (count >= min_cluster_points) break;
+                        }
+                    }
+                }
+                if (count >= min_cluster_points) break;
+            }
+            neighbor_counts[i] = count;
+        }
+        
+        // 5. 第二阶段：核心点判定和合并（优化合并策略）
+        for (size_t i = 0; i < points.size(); ++i) {
+            if (neighbor_counts[i] >= min_cluster_points) {
+                is_core[i] = true;
+                
+                const auto& current_point = points[i];
+                int grid_x = static_cast<int>(current_point.x / grid_size);
+                int grid_y = static_cast<int>(current_point.y / grid_size);
+                
+                // 只与邻近的核心点合并，减少合并操作
+                for (const auto& neighbor_grid : grid_neighbors.at({grid_x, grid_y})) {
+                    auto it = grid.find(neighbor_grid);
+                    if (it != grid.end()) {
+                        for (int idx : it->second) {
+                            if (is_core[idx] && 
+                                (current_point - points[idx]).squaredNorm() < eps * eps) {
+                                uf.unite(i, idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 6. 快速标签分配（保持原有逻辑）
+        std::vector<int> labels(points.size(), -1);
+        std::map<int, int> cluster_map;
+        int next_cluster_id = 0;
+        
+        for (size_t i = 0; i < points.size(); ++i) {
+            if (is_core[i]) {
+                int root = uf.find(i);
+                if (cluster_map.find(root) == cluster_map.end()) {
+                    cluster_map[root] = next_cluster_id++;
+                }
+                labels[i] = cluster_map[root];
+            }
+        }
+        
+        // 7. 简化边界点分配：单次遍历
+        for (size_t i = 0; i < points.size(); ++i) {
+            if (!is_core[i] && labels[i] == -1) {
+                int grid_x = static_cast<int>(points[i].x / grid_size);
+                int grid_y = static_cast<int>(points[i].y / grid_size);
+                
+                for (const auto& neighbor_grid : grid_neighbors.at({grid_x, grid_y})) {
+                    auto it = grid.find(neighbor_grid);
+                    if (it != grid.end()) {
+                        for (int idx : it->second) {
+                            if (labels[idx] != -1 && 
+                                (points[i] - points[idx]).squaredNorm() < eps * eps) {
+                                labels[i] = labels[idx];
+                                break;
+                            }
+                        }
+                    }
+                    if (labels[i] != -1) break;
+                }
+            }
+        }
+        
+        return labels;
 	}
 
     void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
@@ -801,10 +716,10 @@ private:
         best_pose.pose.position.x = 0.0;
         best_pose.pose.position.y = 0.0;
 
-        geometry_msgs::msg::PoseStamped best_pose_debug;
+        /*geometry_msgs::msg::PoseStamped best_pose_debug;
         best_pose_debug.header = msg->header;  // 更新时间戳
         best_pose_debug.pose.position.x = 0.0;
-        best_pose_debug.pose.position.y = 0.0;
+        best_pose_debug.pose.position.y = 0.0;*/
         for (size_t i = 0; i < msg->ranges.size(); ++i) {
             if (msg->intensities[i] > intensity_thresh &&
                 msg->ranges[i] > msg->range_min &&
@@ -820,12 +735,8 @@ private:
             }
         }
         if (points.empty()) {
-            RCLCPP_INFO(this->get_logger(), "未检测到高强度点，不发布结果");
+            RCLCPP_DEBUG(this->get_logger(), "未检测到高强度点，不发布结果");
             return;
-        }
-        // 去噪
-        if (int(points.size()) > min_cluster_points_) {
-            points = statistical_outlier_filter(points,min_cluster_points_);
         }
 
         // 聚类
@@ -847,7 +758,7 @@ private:
         }
 
         if (valid_points.empty()) {
-            RCLCPP_INFO(this->get_logger(), "未检测到有效聚类，不发布结果");
+            RCLCPP_DEBUG(this->get_logger(), "未检测到有效聚类，不发布结果");
             return;
         }
         std::vector<int> unique_labels = valid_labels;
@@ -866,51 +777,39 @@ private:
             }
             double dis_clusters = distanceTo(cluster[0],cluster[int(cluster.size())-1]);
             if(dis_clusters > diameter_min && dis_clusters < diameter_max){
-                auto result = estimator.processRadarData(cluster, time_stamp_);
+                auto result = estimator.processWithLargeAngleSupport(cluster, time_stamp_);
                 
-                /*Vector2d radar_position(0.0,0.0);
-                // 计算原始角度用于比较
-                Line raw_line = RadarDataProcessor::extractLineFromRadarData(cluster);
-                double raw_angle = RadarDataProcessor::calculatePerpendicularDirection(raw_line, radar_position);
-                std::cout << "log info: \t"
-                    << (raw_angle * 180.0 / M_PI) << "°\t"
-                    << result.orientation_angle_deg << "°\t"
-                    << "  Center: (" << result.center_point.x << ", " 
-                    << result.center_point.y << ")\t"
-                    << (result.is_stable ? "Yes" : "No") << "\t"
-                    << (result.confidence * 100) << "%" << std::endl;*/
-                
-                double theta = result.orientation_angle_deg/180*M_PI;
-                Vector2d ori_ref(result.center_point.x,result.center_point.y);
+                double theta = result.stable_orientation;
+                Vector2d ori_ref(result.stable_center.x,result.stable_center.y);
                 std::vector<double> ori_coor;
                 ori_coor.push_back(ori_ref.x);
                 ori_coor.push_back(ori_ref.y);
                 ori_coor.push_back(theta);
-                best_pose_debug.pose.position.x = ori_coor[0];
+                /*best_pose_debug.pose.position.x = ori_coor[0];
                 best_pose_debug.pose.position.y = ori_coor[1];
                 best_pose_debug.pose.orientation.z = std::sin(ori_coor[2] / 2);
                 best_pose_debug.pose.orientation.w = std::cos(ori_coor[2] / 2);
                 //outFile1<< best_pose_debug.pose.position.x <<","<<best_pose_debug.pose.position.y <<","<<theta<<std::endl;
                 RCLCPP_INFO(this->get_logger(),
                     "发布radar_to_reflector结果debug：中心(%.3fm, %.3fm), 方向=%.3frad",
-                    ori_coor[0], ori_coor[1], ori_coor[2]);
+                    ori_coor[0], ori_coor[1], ori_coor[2]);*/
                 std::vector<double> car_r = transformCarToReflectorFrame(ori_coor);
 
                 best_pose.pose.position.x = car_r[0];
                 best_pose.pose.position.y = car_r[1];
                 best_pose.pose.orientation.z = std::sin(car_r[2] / 2);
                 best_pose.pose.orientation.w = std::cos(car_r[2] / 2);
-                double theta_result = 2 * std::atan2(best_pose.pose.orientation.z, best_pose.pose.orientation.w);
+                /*double theta_result = 2 * std::atan2(best_pose.pose.orientation.z, best_pose.pose.orientation.w);
                 RCLCPP_INFO(this->get_logger(),
                     "发布base_link_to_reflector结果：中心(%.3fm, %.3fm), 方向=%.3frad",
-                    best_pose.pose.position.x, best_pose.pose.position.y, theta_result);
+                    best_pose.pose.position.x, best_pose.pose.position.y, theta_result);*/
             }else{
-                RCLCPP_INFO(this->get_logger(), "changdu bumanzu");
+                RCLCPP_DEBUG(this->get_logger(), "The reflective tape fails to meet the length requirement.");
             }
                 
         }
         publisher_->publish(best_pose);
-        publisher_debug->publish(best_pose_debug);
+        //publisher_debug->publish(best_pose_debug);
     }
 };
 

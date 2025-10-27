@@ -18,17 +18,24 @@ def generate_launch_description():
         default_value=package_share_directory,
         description='Path to the YAML configuration file'
     )
+    log_level_arg = DeclareLaunchArgument(
+        'log_level',
+        default_value='info',
+        description='Log level (debug, info, warn, error, fatal)'        
+    )
 
     # 定义节点
     reflector_detector_node = Node(
         package='amr_reflective_strip_recognition_cpp',
         executable='reflector_detector_node',
         parameters=[LaunchConfiguration('config_file')],
+        arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
         name='reflector_detector_node',
         output='screen'
     )
 
     return LaunchDescription([
         config_file_arg,
+        log_level_arg,
         reflector_detector_node
     ])
