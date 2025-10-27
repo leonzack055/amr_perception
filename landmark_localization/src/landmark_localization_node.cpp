@@ -172,7 +172,6 @@ void LandmarkLocalizationNode::loadPriorLandmarks() {
 }
 
 void LandmarkLocalizationNode::laserScan1Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-  std::cout << "---------------scan1---------------" << std::endl;
   if (lidar1_frame_.empty()) {
     lidar1_frame_ = msg->header.frame_id;
   }
@@ -184,7 +183,6 @@ void LandmarkLocalizationNode::laserScan1Callback(const sensor_msgs::msg::LaserS
 }
 
 void LandmarkLocalizationNode::laserScan2Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-  std::cout << "---------------scan2---------------" << std::endl;
   if (lidar2_frame_.empty()) {
     lidar2_frame_ = msg->header.frame_id;
   }
