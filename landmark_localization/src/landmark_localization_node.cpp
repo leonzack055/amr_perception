@@ -1,14 +1,9 @@
 #include "landmark_localization/landmark_localization_node.hpp"
-#include "landmark_localization/landmark_reader.hpp"
-#include "landmark_localization/landmark_matcher.hpp"
-#include "landmark_localization/reflective_post_detector.hpp"
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <mutex>
-
-#include <geometry_msgs/msg/pose_stamped.hpp> 
 #include <Eigen/Dense> 
 #include <Eigen/Geometry>
 
@@ -19,70 +14,17 @@ using namespace std::chrono_literals;
 LandmarkLocalizationNode::LandmarkLocalizationNode()
 : Node("landmark_localization_node")
 {
-  // Declare parameters
-  this->declare_parameter("pbstream_file", "");
-  this->declare_parameter("map_frame", "map");
-  this->declare_parameter("base_frame", "base_link");
-  this->declare_parameter("odom_frame", "odom");
-  this->declare_parameter("matching_threshold", 0.5);
-  this->declare_parameter("publish_visualization", true);
-  this->declare_parameter("intensity_threshold_use", 1000);
-  this->declare_parameter("tf_time_tolerance", 0.05);
-  this->declare_parameter("min_landmarks_for_pose", 3);
+  // 获取yaml配置文件路径
+  std::string config_file_path = this->declare_parameter<std::string>("config_file", "");
   
-  // 激光雷达1参数
-  this->declare_parameter("use_lidar1", true);
-  this->declare_parameter("lidar1_frame", "laser_1");
-  this->declare_parameter("scan1_topic", "/scan_1");
-  
-  // 激光雷达2参数
-  this->declare_parameter("use_lidar2", true);
-  this->declare_parameter("lidar2_frame", "laser_2");
-  this->declare_parameter("scan2_topic", "/scan_2");
-
-  this->declare_parameter("use_combine", false);
-  
-  this->declare_parameter("landmark_topic", "/landmark");
-  this->declare_parameter("visualization_topic", "/landmark_localization_markers");
-  this->declare_parameter("landmark_localization_topic", "/global_pose_qr");
-  this->declare_parameter("initial_pose_topic", "/initial_pose");
-  
-  this->declare_parameter("use_calculate_filter", false);
-  this->declare_parameter("filter_num", 5);
-
-  // 反光柱ID组合滤波
-  use_calculate_filter_ = this->get_parameter("use_calculate_filter").as_bool();
-  filter_num_ = this->get_parameter("filter_num").as_int();
-  
-  // Get parameters
-  pbstream_file_ = this->get_parameter("pbstream_file").as_string();
-  map_frame_ = this->get_parameter("map_frame").as_string();
-  base_frame_ = this->get_parameter("base_frame").as_string();
-  odom_frame_ = this->get_parameter("odom_frame").as_string();
-  matching_threshold_ = this->get_parameter("matching_threshold").as_double();
-  publish_visualization_ = this->get_parameter("publish_visualization").as_bool();
-  intensity_threshold_use = this->get_parameter("intensity_threshold_use").as_int();
-  tf_time_tolerance_ = this->get_parameter("tf_time_tolerance").as_double();
-  min_landmarks_for_pose_ = this->get_parameter("min_landmarks_for_pose").as_int();
-  
-  // 获取激光雷达1参数
-  use_lidar1_ = this->get_parameter("use_lidar1").as_bool();
-  scan1_topic_ = this->get_parameter("scan1_topic").as_string();
-  
-  // 获取激光雷达2参数
-  use_lidar2_ = this->get_parameter("use_lidar2").as_bool();
-  scan2_topic_ = this->get_parameter("scan2_topic").as_string();
-
-  use_combine_ = this->get_parameter("use_combine").as_bool();
-  if (!use_lidar2_ && use_combine_) {
-    use_combine_ = false;
-    RCLCPP_WARN(this->get_logger(), "Combined processing is disabled since lidar2 is not used");
+  if (config_file_path.empty()) {
+    RCLCPP_ERROR(this->get_logger(), "config_file parameter is empty, cannot load parameters from yaml");
+    rclcpp::shutdown();
+    return;
   }
   
-  landmark_topic_ = this->get_parameter("landmark_topic").as_string();
-  visualization_topic_ = this->get_parameter("visualization_topic").as_string();
-  landmark_localization_topic_ = this->get_parameter("landmark_localization_topic").as_string();
-  initial_pose_topic_ = this->get_parameter("initial_pose_topic").as_string();
+  // 从yaml文件加载参数
+  loadParametersFromYaml(config_file_path);
 
   // Initialize TF2
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -91,7 +33,7 @@ LandmarkLocalizationNode::LandmarkLocalizationNode()
   // Initialize components
   landmark_reader_ = std::make_shared<LandmarkReader>(pbstream_file_);
   landmark_matcher_ = std::make_shared<LandmarkMatcher>(matching_threshold_);
-  post_detector_ = std::make_shared<ReflectivePostDetector>(intensity_threshold_use);
+  post_detector_ = std::make_shared<ReflectivePostDetector>(intensity_threshold_use,max_age_param);
 
   // Load prior landmarks from map
   loadPriorLandmarks();
@@ -210,7 +152,7 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
     scan1.range_max = scan1_msg->range_max;
     
     auto scan1_detected_posts = post_detector_->detect(scan1);
-    std::cout << "Scan1 detected " << scan1_detected_posts.size() << " posts" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "Scan1 detected %zu posts", scan1_detected_posts.size());
     
     // 将scan1检测到的反光柱转换为Landmark格式（在scan1坐标系下）
     for (size_t i = 0; i < scan1_detected_posts.size(); ++i) {
@@ -223,8 +165,38 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
       all_detected_landmarks.push_back(lm);
     }
     
+    // 检查scan1检测到的地标是否都是同侧的
+    bool scan1_all_same_side = false;
+    if (scan1_detected_posts.size() > 0) {
+      bool has_positive_y = false;
+      bool has_negative_y = false;
+      
+      for (const auto& post : scan1_detected_posts) {
+        if (post.position.y > 0.0) {
+          has_positive_y = true;
+        } else if (post.position.y < 0.0) {
+          has_negative_y = true;
+        }
+      }
+      
+      // 如果有正有负，说明不同侧；否则都是同侧
+      scan1_all_same_side = !(has_positive_y && has_negative_y);
+    }
+    
     // 检查是否需要结合scan2数据
-    if (scan1_detected_posts.size() < min_landmarks_for_pose_ && use_lidar2_) {
+    // 条件：1) scan1检测到的地标数量不足 或 2) scan1检测到的地标都是同侧的
+    bool need_combine_scan2 = false;
+    std::string combine_reason = "";
+    if (scan1_detected_posts.size() < min_landmarks_for_pose_) {
+      need_combine_scan2 = true;
+      combine_reason = "insufficient landmarks";
+    } else if (scan1_all_same_side) {
+      need_combine_scan2 = true;
+      combine_reason = "all landmarks on same side";
+    }
+    
+    if (need_combine_scan2 && use_lidar2_) {
+      RCLCPP_INFO(this->get_logger(), "Combining scan2 data, reason: %s", combine_reason.c_str());
       std::lock_guard<std::mutex> lock(scan2_mutex_);
       if (latest_scan2_msg_ != nullptr) {
         // 处理scan2数据（变换到scan1坐标系）
@@ -236,10 +208,10 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
                                       scan2_transformed_landmarks.end());
         }
 
-        std::cout << "Total landmarks after combination: " << all_detected_landmarks.size() << std::endl;
+        RCLCPP_INFO(this->get_logger(), "Total landmarks after combination: %zu", all_detected_landmarks.size());
         
         if (all_detected_landmarks.size() < min_landmarks_for_pose_) {
-          std::cout << "Combined landmarks still less than " << min_landmarks_for_pose_ << ", skipping pose calculation" << std::endl;
+          RCLCPP_WARN(this->get_logger(), "Combined landmarks still less than %d, skipping pose calculation", min_landmarks_for_pose_);
           return;
         }
       }
@@ -321,9 +293,9 @@ void LandmarkLocalizationNode::processCombinedScan(const sensor_msgs::msg::Laser
     }
     
   } catch (tf2::TransformException &ex) {
-    std::cout << "TF transform error in combined processing: " << ex.what() << std::endl;
+    RCLCPP_WARN(this->get_logger(), "TF transform error in combined processing: %s", ex.what());
   } catch (const std::exception& e) {
-    std::cerr << "Error processing combined scan: " << e.what() << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Error processing combined scan: %s", e.what());
   }
 }
 
@@ -346,7 +318,7 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
     scan2.range_max = scan2_msg->range_max;
     
     auto scan2_detected_posts = post_detector_->detect(scan2);
-    std::cout << "Scan2 detected " << scan2_detected_posts.size() << " posts" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "Scan2 detected %zu posts", scan2_detected_posts.size());
     
     if (scan2_detected_posts.empty()) {
       return false;
@@ -362,7 +334,8 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
         tf2::durationFromSec(tf_time_tolerance_));
       tf2::fromMsg(complete_transform.transform, tf_complete);
     } catch (tf2::TransformException &ex) {
-      std::cerr << "Could not transform " << target_frame << " to " << scan2_msg->header.frame_id << ": " << ex.what() << std::endl;
+      RCLCPP_ERROR(this->get_logger(), "Could not transform %s to %s: %s", 
+                   target_frame.c_str(), scan2_msg->header.frame_id.c_str(), ex.what());
       return false;
     }
     
@@ -385,10 +358,10 @@ bool LandmarkLocalizationNode::transformScan2LandmarksToScan1Frame(
     return true;
     
   } catch (tf2::TransformException &ex) {
-    std::cout << "TF transform error in scan2 landmark transformation: " << ex.what() << std::endl;
+    RCLCPP_WARN(this->get_logger(), "TF transform error in scan2 landmark transformation: %s", ex.what());
     return false;
   } catch (const std::exception& e) {
-    std::cerr << "Error transforming scan2 landmarks: " << e.what() << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Error transforming scan2 landmarks: %s", e.what());
     return false;
   }
 }
@@ -411,10 +384,10 @@ void LandmarkLocalizationNode::processLaserScan(const sensor_msgs::msg::LaserSca
     auto detected_posts = post_detector_->detect(scan);
     
     if (detected_posts.empty()) {
-      std::cout << "未检测到有效反光柱" << std::endl;
+      RCLCPP_INFO(this->get_logger(), "未检测到有效反光柱");
       return;
     } else {
-      std::cout << "检测到 " << detected_posts.size() << " 个反光柱" << std::endl;
+      RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱", detected_posts.size());
     }
 
     // Get transform from lidar to map frame
@@ -499,9 +472,9 @@ void LandmarkLocalizationNode::processLaserScan(const sensor_msgs::msg::LaserSca
     }
     
   } catch (tf2::TransformException &ex) {
-    std::cout << "TF transform error for " << lidar_frame << ": " << ex.what() << std::endl;
+    RCLCPP_WARN(this->get_logger(), "TF transform error for %s: %s", lidar_frame.c_str(), ex.what());
   } catch (const std::exception& e) {
-    std::cerr << "Error processing laser scan from " << lidar_frame << ": " << e.what() << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Error processing laser scan from %s: %s", lidar_frame.c_str(), e.what());
   }
 }
 
@@ -580,7 +553,8 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
   auto start_time = std::chrono::high_resolution_clock::now();
 
   if (prior_landmarks.size() < min_landmarks_for_pose_ || detected_landmarks.size() < min_landmarks_for_pose_) {
-    std::cerr << "Need at least " << min_landmarks_for_pose_ << " matched landmarks for accurate pose calculation, got " << detected_landmarks.size() << std::endl;
+    RCLCPP_WARN(this->get_logger(), "Need at least %d matched landmarks for accurate pose calculation, got %zu", 
+                min_landmarks_for_pose_, detected_landmarks.size());
     return false;
   }
 
@@ -588,7 +562,7 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
   std::vector<LandmarkInfo> selected_prior_landmarks = prior_landmarks;
   std::vector<Landmark> selected_detected_landmarks = detected_landmarks;
 
-  // 如果检测到的地标数量超过最小值，选择欧氏距离最近的min_landmarks_for_pose_个地标
+  // 如果检测到的地标数量超过最小值，根据数量选择不同数量的最近地标
   if (detected_landmarks.size() >= min_landmarks_for_pose_) {
     // 计算每个地标的欧氏距离
     std::vector<std::pair<double, size_t>> distances_with_indices;
@@ -604,29 +578,105 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
                 return a.first < b.first;
               });
     
-    // 选择前min_landmarks_for_pose_个最近的地标
+    // 根据检测到的地标数量决定选择多少个地标
+    size_t num_to_select;
+    if (detected_landmarks.size() == min_landmarks_for_pose_) {
+      num_to_select = min_landmarks_for_pose_;
+    } else {
+      num_to_select = min_landmarks_for_pose_ + 1;
+    }
+    
+    // 选择前num_to_select个最近的地标
     std::vector<LandmarkInfo> temp_prior_landmarks;
     std::vector<Landmark> temp_detected_landmarks;
+    std::vector<size_t> selected_indices; // 记录选中的索引
     
-    for (size_t i = 0; i < min_landmarks_for_pose_; ++i) {
+    for (size_t i = 0; i < num_to_select; ++i) {
       size_t original_index = distances_with_indices[i].second;
       temp_prior_landmarks.push_back(prior_landmarks[original_index]);
       temp_detected_landmarks.push_back(detected_landmarks[original_index]);
+      selected_indices.push_back(original_index);
+    }
+    
+    // 检查选中的地标是否都是同侧的（y值同号）
+    bool all_same_side = true;
+    bool has_positive_y = false;
+    bool has_negative_y = false;
+    
+    for (const auto& landmark : temp_detected_landmarks) {
+      if (landmark.y > 0.0) {
+        has_positive_y = true;
+      } else if (landmark.y < 0.0) {
+        has_negative_y = true;
+      }
+    }
+    
+    // 如果有正有负，说明不同侧
+    if (has_positive_y && has_negative_y) {
+      all_same_side = false;
+    }
+    
+    // 如果选中的都是同侧地标，尝试替换为不同侧的
+    if (all_same_side && num_to_select < distances_with_indices.size()) {
+      // 确定当前选中的是正侧还是负侧
+      bool current_side_is_positive = has_positive_y;
+      
+      // 在剩余未选中的地标中，找到最近的不同侧地标
+      size_t replacement_index = std::numeric_limits<size_t>::max();
+      
+      for (size_t i = num_to_select; i < distances_with_indices.size(); ++i) {
+        size_t candidate_index = distances_with_indices[i].second;
+        double candidate_y = detected_landmarks[candidate_index].y;
+        
+        // 检查是否是不同侧
+        bool is_different_side = false;
+        if (current_side_is_positive && candidate_y < 0.0) {
+          is_different_side = true;
+        } else if (!current_side_is_positive && candidate_y > 0.0) {
+          is_different_side = true;
+        }
+        
+        if (is_different_side) {
+          // 找到第一个不同侧的地标，由于distances_with_indices已按距离排序，第一个不同侧的地标就是最近的
+          replacement_index = candidate_index;
+          break;
+        }
+      }
+      
+      // 如果找到了不同侧的地标，替换选中最远的
+      if (replacement_index != std::numeric_limits<size_t>::max()) {
+        // 找到选中最远的那个（即最后一个，因为已经按距离排序）
+        size_t farthest_in_selected = selected_indices.size() - 1;
+        size_t farthest_original_index = selected_indices[farthest_in_selected];
+        
+        // 替换
+        temp_prior_landmarks[farthest_in_selected] = prior_landmarks[replacement_index];
+        temp_detected_landmarks[farthest_in_selected] = detected_landmarks[replacement_index];
+        selected_indices[farthest_in_selected] = replacement_index;
+        
+        RCLCPP_INFO(this->get_logger(), "Replaced farthest landmark (ID %d) with different-side landmark (ID %d)", 
+                    detected_landmarks[farthest_original_index].id, detected_landmarks[replacement_index].id);
+      } else {
+        RCLCPP_INFO(this->get_logger(), "All selected landmarks are on the same side, but no different-side landmark found");
+      }
     }
     
     // 更新选中的地标
     selected_prior_landmarks = std::move(temp_prior_landmarks);
     selected_detected_landmarks = std::move(temp_detected_landmarks);
     
-    std::cout << "Selected " << min_landmarks_for_pose_ << " closest landmarks from " 
-              << detected_landmarks.size() << " matched landmarks" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "Selected %zu landmarks from %zu matched landmarks", 
+                num_to_select, detected_landmarks.size());
   }
 
-  std::cout << "Selected closest landmarks id: ";
-  for (auto landmark : selected_prior_landmarks) {
-     std::cout << landmark.landmark_id << " ";
+  std::string landmark_ids_str = "";
+  for (const auto& landmark : selected_prior_landmarks) {
+    if (!landmark_ids_str.empty()) {
+      landmark_ids_str += " ";
+    }
+    landmark_ids_str += landmark.landmark_id;
   }
-  std::cout << std::endl;
+  RCLCPP_INFO(this->get_logger(), "Selected closest landmarks id: %s", landmark_ids_str.c_str());
 
   // 新增滤波检查
   if (!checkFilterCondition(selected_prior_landmarks)) {
@@ -696,11 +746,12 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
             geometry_msgs::msg::TransformStamped base_to_lidar_tf_msg = tf_buffer_->lookupTransform(
                 lidar_frame, base_frame_, tf2::TimePointZero);
             tf2::fromMsg(base_to_lidar_tf_msg.transform, base_to_lidar_tf);
-            std::cout << "Successfully got TF transform in callback" << std::endl;
+            RCLCPP_DEBUG(this->get_logger(), "Successfully got TF transform in callback");
             has_base_to_lidar1_tf_ = true;
             base_to_lidar1_tf_ = base_to_lidar_tf;
           } catch (tf2::TransformException &ex) {
-            std::cerr << "Could not transform " << lidar_frame << " to " << base_frame_ << ": " << ex.what() << std::endl;
+            RCLCPP_ERROR(this->get_logger(), "Could not transform %s to %s: %s", 
+                        lidar_frame.c_str(), base_frame_.c_str(), ex.what());
             return false;
           }
       }
@@ -712,11 +763,12 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
             geometry_msgs::msg::TransformStamped base_to_lidar_tf_msg = tf_buffer_->lookupTransform(
                 lidar_frame, base_frame_, tf2::TimePointZero);
             tf2::fromMsg(base_to_lidar_tf_msg.transform, base_to_lidar_tf);
-            std::cout << "Successfully got TF transform in callback" << std::endl;
+            RCLCPP_DEBUG(this->get_logger(), "Successfully got TF transform in callback");
             has_base_to_lidar2_tf_ = true;
             base_to_lidar2_tf_ = base_to_lidar_tf;
           } catch (tf2::TransformException &ex) {
-            std::cerr << "Could not transform " << lidar_frame << " to " << base_frame_ << ": " << ex.what() << std::endl;
+            RCLCPP_ERROR(this->get_logger(), "Could not transform %s to %s: %s", 
+                        lidar_frame.c_str(), base_frame_.c_str(), ex.what());
             return false;
           }
       }
@@ -738,16 +790,17 @@ bool LandmarkLocalizationNode::calculateRobotPose(const std::vector<LandmarkInfo
     double base_yaw = std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
                                 1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
     
-    std::cout << "解算位姿: x=" << base_to_map_tf.getOrigin().x() << ", y=" << base_to_map_tf.getOrigin().y() << ", theta=" << base_yaw << " rad" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "解算位姿: x=%.3f, y=%.3f, theta=%.3f rad", 
+                base_to_map_tf.getOrigin().x(), base_to_map_tf.getOrigin().y(), base_yaw);
     
     // 结束计时
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    std::cout << "解算耗时: " << duration.count() << " 毫秒" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "解算耗时: %ld 毫秒", duration.count());
     return true;
     
   } catch (const std::exception& e) {
-    std::cerr << "Error calculating robot pose: " << e.what() << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Error calculating robot pose: %s", e.what());
     return false;
   }
 }
@@ -763,9 +816,6 @@ void LandmarkLocalizationNode::initialPoseCallback(const amr_ros_msg::msg::PoseW
       loadPriorLandmarks();
       
       RCLCPP_INFO(this->get_logger(), "Prior landmarks reloaded successfully");
-      
-      // 可以选择在这里发布初始位姿或者进行其他处理
-      // 例如：pose_pub_->publish(msg->inital_pose);
       
     } else if (msg->type == "A") {  // 自动模式
       RCLCPP_INFO(this->get_logger(), "Auto mode detected, no action taken for landmark reloading");
@@ -795,20 +845,88 @@ bool LandmarkLocalizationNode::checkFilterCondition(const std::vector<LandmarkIn
       consecutive_count_ = filter_num_;
     }
   } else {
-    consecutive_count_ = 1;
-    last_accepted_set_ = current_set;
+    // 检查是否是包含关系
+    bool is_subset_relation = false;
+    if (!last_accepted_set_.empty()) {
+      // 检查 current_set 是否包含 last_accepted_set_
+      bool last_is_subset_of_current = std::includes(current_set.begin(), current_set.end(),
+                                                      last_accepted_set_.begin(), last_accepted_set_.end());
+      // 检查 last_accepted_set_ 是否包含 current_set
+      bool current_is_subset_of_last = std::includes(last_accepted_set_.begin(), last_accepted_set_.end(),
+                                                      current_set.begin(), current_set.end());
+      
+      is_subset_relation = last_is_subset_of_current || current_is_subset_of_last;
+    }
+    
+    if (is_subset_relation) {
+      // 如果是包含关系，认为无需滤波，继续计数并更新集合
+      consecutive_count_++;
+      if (consecutive_count_ >= std::numeric_limits<int>::max()) {
+        consecutive_count_ = filter_num_;
+      }
+      last_accepted_set_ = current_set;
+    } else {
+      // 否则重置计数并更新集合
+      consecutive_count_ = 1;
+      last_accepted_set_ = current_set;
+    }
   }
   
   // 检查是否达到连续k次
   if (consecutive_count_ >= filter_num_) {
-    std::cout << "Filter condition satisfied: consecutive count " << consecutive_count_ 
-              << " >= filter_num=" << filter_num_ << std::endl;
+    RCLCPP_DEBUG(this->get_logger(), "Filter condition satisfied: consecutive count %d >= filter_num=%d", 
+                 consecutive_count_, filter_num_);
     return true;
   } else {
-    std::cout << "Filter condition not satisfied: current consecutive count " << consecutive_count_ 
-              << " < filter_num=" << filter_num_ << std::endl;
+    RCLCPP_DEBUG(this->get_logger(), "Filter condition not satisfied: current consecutive count %d < filter_num=%d", 
+                 consecutive_count_, filter_num_);
     
     return false;
+  }
+}
+
+void LandmarkLocalizationNode::loadParametersFromYaml(const std::string& yaml_file_path) {
+  try {
+    YAML::Node config = YAML::LoadFile(yaml_file_path);
+    
+    if (!config["landmark_localization"]) {
+      RCLCPP_ERROR(this->get_logger(), "YAML file does not contain 'landmark_localization' key");
+      return;
+    }
+    
+    YAML::Node params = config["landmark_localization"];
+    
+    pbstream_file_ = params["pbstream_file"].as<std::string>();
+    map_frame_ = params["map_frame"].as<std::string>();
+    base_frame_ = params["base_frame"].as<std::string>();
+    odom_frame_ = params["odom_frame"].as<std::string>();
+    matching_threshold_ = params["matching_threshold"].as<double>();
+    publish_visualization_ = params["publish_visualization"].as<bool>();
+    intensity_threshold_use = params["intensity_threshold_use"].as<int>();
+    max_age_param = params["max_age_param"].as<int>();
+    tf_time_tolerance_ = params["tf_time_tolerance"].as<double>();
+    min_landmarks_for_pose_ = params["min_landmarks_for_pose"].as<int>();
+    use_calculate_filter_ = params["use_calculate_filter"].as<bool>();
+    filter_num_ = params["filter_num"].as<int>();
+    use_lidar1_ = params["use_lidar1"].as<bool>();
+    scan1_topic_ = params["scan1_topic"].as<std::string>();
+    use_lidar2_ = params["use_lidar2"].as<bool>();
+    scan2_topic_ = params["scan2_topic"].as<std::string>();
+    use_combine_ = params["use_combine"].as<bool>();
+    if (!use_lidar2_ && use_combine_) {
+      use_combine_ = false;
+      RCLCPP_WARN(this->get_logger(), "Combined processing is disabled since lidar2 is not used");
+    }
+    landmark_topic_ = params["landmark_topic"].as<std::string>();
+    visualization_topic_ = params["visualization_topic"].as<std::string>();
+    landmark_localization_topic_ = params["landmark_localization_topic"].as<std::string>();
+    initial_pose_topic_ = params["initial_pose_topic"].as<std::string>();
+    
+    RCLCPP_INFO(this->get_logger(), "Successfully loaded parameters from yaml file: %s", yaml_file_path.c_str());
+  } catch (const YAML::Exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Error parsing YAML file %s: %s", yaml_file_path.c_str(), e.what());
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Error loading YAML file %s: %s", yaml_file_path.c_str(), e.what());
   }
 }
 

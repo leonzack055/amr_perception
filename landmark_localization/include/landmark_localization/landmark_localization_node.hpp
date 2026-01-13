@@ -3,14 +3,17 @@
 #include <rclcpp/rclcpp.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <cartographer_ros_msgs/msg/landmark_list.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp> 
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include "landmark_localization/landmark_reader.hpp"
 #include "landmark_localization/landmark_matcher.hpp"
 #include "landmark_localization/reflective_post_detector.hpp"
 #include "amr_ros_msg/msg/pose_with_type_stamped.hpp"
+#include <yaml-cpp/yaml.h>
 
 namespace landmark_localization {
 
@@ -20,6 +23,7 @@ public:
   ~LandmarkLocalizationNode();
 
 private:
+  void loadParametersFromYaml(const std::string& yaml_file_path);
   void laserScan1Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void laserScan2Callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
   void initialPoseCallback(const amr_ros_msg::msg::PoseWithTypeStamped::SharedPtr msg);
@@ -90,6 +94,7 @@ private:
   double matching_threshold_;
   bool publish_visualization_;
   int intensity_threshold_use = 1000;
+  int max_age_param = 8;
   double tf_time_tolerance_ = 0.05;
   int min_landmarks_for_pose_ = 3; 
   

@@ -70,7 +70,7 @@ install(TARGETS reflector_detector_circle_fit
 # Install launch files
 install(DIRECTORY
   launch/
-  DESTINATION share/${PROJECT_NAME}/launch
+  DESTINATION share/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

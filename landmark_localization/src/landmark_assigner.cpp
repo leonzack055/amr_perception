@@ -3,7 +3,7 @@
 namespace landmark_localization
 {
 LandmarkAssigner::LandmarkAssigner()
-: search_range_(10.0), match_threshold_(0.2), id_counter_(0),
+: search_range_(1000.0), match_threshold_(0.5), id_counter_(0),
   base_to_laser_transform_available_(false),
   laser_frame_(""), last_pose_time_ns_(0)
 {

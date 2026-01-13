@@ -26,6 +26,7 @@ find_package(absl REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(amr_ros_msg REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Include directories
 include_directories(
@@ -102,6 +103,7 @@ target_link_libraries(landmark_localization_node
   landmark_matcher
   reflective_post_detector
   cartographer
+  yaml-cpp
 )
 ament_target_dependencies(landmark_localization_node
   rclcpp

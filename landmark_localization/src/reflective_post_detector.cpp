@@ -6,13 +6,27 @@
 namespace landmark_localization
 {
 
-ReflectivePostDetector::ReflectivePostDetector(int intensity_threshold)
+ReflectivePostDetector::ReflectivePostDetector(int intensity_threshold,int max_age_launch_)
 {
   intensity_threshold_use = intensity_threshold;
+  max_age_param_ = max_age_launch_;
 }
 
 ReflectivePostDetector::~ReflectivePostDetector()
 {
+}
+
+std::vector<TrackPoint> ReflectivePostDetector::trackWithMOT(const std::vector<TrackPoint>& detections_){
+    TrajectorySmoother smoother;
+    X5MOTTracker tracker;
+    tracker = X5MOTTracker(max_age_param_);
+    float timestamp_ = std::chrono::duration<float>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto tracked_objects = tracker.processFrame(detections_,timestamp_);
+    for(auto& obj_ : tracked_objects){
+        smoother.smoothTrajectory(obj_);
+    }
+    return tracked_objects;
 }
 
 std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & scan)
@@ -23,9 +37,6 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
   auto start_time = std::chrono::high_resolution_clock::now();
 
   int intensity_thresh = intensity_threshold_use;
-
-  auto cur_time = std::chrono::system_clock::now();
-  auto microseconds_ = std::chrono::duration_cast<std::chrono::microseconds>(cur_time.time_since_epoch());
   // 提取高强度点
   std::vector<Point> points;
   std::vector<float> high_intensities;
@@ -33,7 +44,7 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
   for (size_t i = 0; i < scan.ranges.size(); ++i) {
     if (scan.intensities[i] > intensity_thresh &&
       scan.ranges[i] > scan.range_min &&
-      scan.ranges[i] < scan.range_max &&
+      scan.ranges[i] < 10 &&
       !std::isnan(scan.ranges[i]))
     {
 
@@ -52,11 +63,6 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
 
   if (points.empty()) {
     return detected_posts;
-  }
-
-  // 去噪
-  if (points.size() > min_cluster_points) {
-    points = statistical_outlier_filter(points);
   }
 
   // 聚类
@@ -85,7 +91,7 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
   unique_labels.erase(
     std::unique(unique_labels.begin(), unique_labels.end()),
     unique_labels.end());
-  std::vector<CircleCenter> current_detections;
+  std::vector<TrackPoint> current_detections;
   for (int label : unique_labels) {
     std::vector<Point> cluster;
     for (size_t i = 0; i < valid_labels.size(); ++i) {
@@ -94,11 +100,19 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
       }
     }
     // 进行高斯拟合
-    ReflectorCenterDetector detector(residual_real, intensity_thresh);
+    ReflectorCenterDetector detector(residual_real);
     Point detected_center,orion_p;
     orion_p.x = 0.0;
     orion_p.y = 0.0;
-    bool result_ = detector.detectReflectorCenter(cluster, detected_center,orion_p);
+    double confidence_ = 0.0;
+    auto cur_time = std::chrono::steady_clock::now();
+    auto microseconds = std::chrono::duration<float>(cur_time.time_since_epoch());
+    bool result_ = detector.detectReflectorCenter(cluster, detected_center,orion_p,confidence_);
+    float result_distance = detected_center.x*detected_center.x + detected_center.y*detected_center.y;
+    float result_angle = std::atan2(fabs(detected_center.x),fabs(detected_center.y));
+    if(result_angle < 0.52 || fabs(detected_center.x)>4.5){
+      result_ = false;
+    }
     if(result_){
       Point reflector_center_;
       reflector_center_.x = detected_center.x;
@@ -111,30 +125,25 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
       WeightedCircle weighted_circle = assignWeightsToCircle(cluster, reflector_center_, 0.0005, orion_p, params);
       double t_w = weighted_circle.weight_translation;
       double r_w = weighted_circle.weight_rotation;
-      double confidence = 0.99;
+      double confidence = confidence_;
       double diameter = residual_real*2;
-      CircleCenter tmp_results(reflector_center_.x,reflector_center_.y,microseconds_.count(),t_w,r_w,confidence,diameter,label);
-      current_detections.push_back(tmp_results);
-      // std::cout << "完成反光柱聚类检测" << std::endl;
+      current_detections.emplace_back(reflector_center_.x,reflector_center_.y,microseconds.count(),t_w,r_w,confidence,diameter,-1);
+      //std::cout << "完成反光柱聚类检测" << std::endl;
     }
   }
 
-  // 第一步：相对坐标平滑
-  std::vector<CircleCenter> smoothed = smoother.processFrame(current_detections);
-  
-  // 第二步：几何关系稳定
-  std::vector<CircleCenter> stabilized = geometric_stabilizer.stabilizeByGeometry(smoothed);
+  //auto mot_detections = trackWithMOT(current_detections);
   // 结束计时
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
   std::cout << "检测耗时: " << duration.count() << " 毫秒" << std::endl;
 
-  for (const auto & detection : stabilized) {
+  for (const auto & detection : current_detections) {
     ReflectivePost post;
     post.position.x = detection.x;
     post.position.y = detection.y;
     post.position.z = 0.0;
-    post.translation_weight = detection.t * landmark_translation_weight;
+    post.translation_weight = detection.t_w * landmark_translation_weight;
     post.rotation_weight = landmark_rotation_weight;
     detected_posts.push_back(post);
 
@@ -147,14 +156,11 @@ std::vector<ReflectivePost> ReflectivePostDetector::detect(const LaserScan & sca
 
 std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & scan){
   std::vector<Detection> detected_posts;
-  std::vector<CircleCenter> current_detections;
+  std::vector<TrackPoint> current_detections;
   // 开始计时
   auto start_time = std::chrono::high_resolution_clock::now();
 
   int intensity_thresh = intensity_threshold_use;
-
-  auto cur_time = std::chrono::system_clock::now();
-  auto microseconds_ = std::chrono::duration_cast<std::chrono::microseconds>(cur_time.time_since_epoch());
   // 提取高强度点
   std::vector<Point> points;
   std::vector<float> high_intensities;
@@ -162,7 +168,7 @@ std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & 
   for (size_t i = 0; i < scan.ranges.size(); ++i) {
     if (scan.intensities[i] > intensity_thresh &&
       scan.ranges[i] > scan.range_min &&
-      scan.ranges[i] < scan.range_max &&
+      scan.ranges[i] < 10 &&
       !std::isnan(scan.ranges[i]))
     {
 
@@ -180,11 +186,6 @@ std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & 
 
   if (points.empty()) {
     return detected_posts;
-  }
-
-  // 去噪
-  if (points.size() > min_cluster_points) {
-    points = statistical_outlier_filter(points);
   }
 
   // 聚类
@@ -221,11 +222,31 @@ std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & 
       }
     }
     // 进行高斯拟合
-    ReflectorCenterDetector detector(residual_real, intensity_thresh);
+    ReflectorCenterDetector detector(residual_real);
     Point detected_center,orion_p;
     orion_p.x = 0.0;
     orion_p.y = 0.0;
-    bool result_ = detector.detectReflectorCenter(cluster, detected_center,orion_p);
+    double confidence_ = 0.0;
+    auto cur_time = std::chrono::steady_clock::now();
+    auto microseconds = std::chrono::duration<float>(cur_time.time_since_epoch());
+    
+    float maxDist = distanceMax(cluster);  // 新增：计算聚类内最大距离
+    bool result_ = false;
+    if(maxDist < 0.004 && maxDist > 0.002){  // 新增：距离范围过滤
+        result_ = detector.detectReflectorCenter(cluster, detected_center, orion_p, confidence_);
+        float result_angle = std::atan2(fabs(detected_center.x), fabs(detected_center.y));
+        if(result_angle < 0.52 || fabs(detected_center.x) > 4.5){
+            result_ = false;
+        }
+    }
+
+    // 2026-01-08 注释，增加距离范围过滤
+    // float result_distance = detected_center.x*detected_center.x + detected_center.y*detected_center.y;
+    // float result_angle = std::atan2(fabs(detected_center.x),fabs(detected_center.y));
+    // if(result_angle < 0.52 || fabs(detected_center.x)>4.5){
+    //   result_ = false;
+    // }
+
     if(result_){
       Point reflector_center_;
       reflector_center_.x = detected_center.x;
@@ -238,24 +259,19 @@ std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & 
       WeightedCircle weighted_circle = assignWeightsToCircle(cluster, reflector_center_, 0.0005, orion_p, params);
       double t_w = weighted_circle.weight_translation;
       double r_w = weighted_circle.weight_rotation;
-      double confidence = 0.99;
+      double confidence = confidence_;
       double diameter = residual_real*2;
-      CircleCenter tmp_results(reflector_center_.x,reflector_center_.y,microseconds_.count(),t_w,r_w,confidence,diameter,label);
-      current_detections.push_back(tmp_results);
-      // std::cout << "完成反光柱聚类检测" << std::endl;
+      current_detections.emplace_back(reflector_center_.x,reflector_center_.y,microseconds.count(),t_w,r_w,confidence,diameter,-1);
+      //std::cout << "完成反光柱聚类检测" << std::endl;
     }
   }
 
-  // 第一步：相对坐标平滑
-  std::vector<CircleCenter> smoothed = smoother.processFrame(current_detections);
-  
-  // 第二步：几何关系稳定
-  std::vector<CircleCenter> stabilized = geometric_stabilizer.stabilizeByGeometry(smoothed);
+  //auto mot_detections = trackWithMOT(current_detections);
   // 结束计时
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
   std::cout << "检测耗时: " << duration.count() << " 毫秒" << std::endl;
-  for (const auto & detection : stabilized) {
+  for (const auto & detection : current_detections) {
     double x_ = -detection.x;
     double y_ = -detection.y;
     double normal_theta = std::atan2(y_, x_);
@@ -269,10 +285,10 @@ std::vector<Detection> ReflectivePostDetector::detect_circles(const LaserScan & 
       transforms::Rigid3d::AngleAxis(normal_theta, Eigen::Matrix<double, 3, 1>::UnitZ()));
     Detection result_;
     result_.pose = pose;
-    result_.diameter = detection.d;
-    result_.confidence = detection.c;
-    result_.translationW = detection.t;
-    result_.rotationW = detection.r;
+    result_.diameter = detection.diameter;
+    result_.confidence = detection.confidence;
+    result_.translationW = detection.t_w;
+    result_.rotationW = detection.r_w;
     detected_posts.push_back(result_);
   }
   return detected_posts;
