@@ -1,0 +1,95 @@
+# 反光柱噪声处理节点参数配置 (分形维数+改进插值+圆拟合+PCA分类版本)
+# Reflector Noise Handling Node Parameters (Fractal Dimension + Improved Interpolation + Circle Fit + PCA Classification Version)
+
+reflector_noise_handling:
+  ros__parameters:
+    # 激光扫描话题
+    scan_topic: "/scan"
+    
+    # 地标输出话题
+    landmark_topic: "/landmark_noise"
+    
+    # 可视化标记话题
+    marker_topic: "/reflector_noise_markers"
+    
+    # 补偿后点云话题（用于可视化调试）
+    compensated_cloud_topic: "/compensated_cloud"
+    
+    # === 分类方法选择 ===
+    # 分类方法: "fractal_dimension" (分形维数) 或 "pca" (主成分分析)
+    classification_method: "pca"
+    
+    # === 阶段1: 固定强度阈值和DBSCAN ===
+    # 原始强度阈值（固定值，不进行补偿或归一化）
+    raw_intensity_threshold: 1000.0
+    
+    # === 阶段2: 分形维数过滤 ===
+    fractal_dimension:
+      enable: true
+      # 反光柱的分形维数范围 [1.0, 1.3]
+      min_fd_for_post: 1.0
+      max_fd_for_post: 1.3
+      # 最小点云密度（点数/面积）
+      min_density: 50.0
+    
+    # === 阶段2: PCA形状分类 ===
+    pca_classification:
+      enable: true
+      # 延伸度阈值 - 反光柱应该接近圆形，延伸度应该较小
+      max_elongation_post: 9.50
+      # 延伸度阈值 - 反光板应该有较大的延伸度
+      min_elongation_board: 12.0
+      # 线性度阈值 - 反光柱应该有较低的线性度
+      max_linearity_post: 0.978
+      # 线性度阈值 - 反光板应该有较高的线性度
+      min_linearity_board: 0.94
+      # 圆形度阈值 - 反光柱应该有较高的圆形度
+      min_circularity_post: 0.64
+      # 圆形度阈值 - 反光板应该有较低的圆形度
+      min_circularity_board: 0.46
+      # 最小点数
+      min_points: 10
+    
+    # === 阶段2: 改进的插值补偿 ===
+    interpolation:
+      min_points: 5           # 最小点数
+      max_points: 20          # 最大点数
+      min_distance: 2.0       # 最小插值距离2m
+      max_distance: 4.0       # 最大插值距离4m
+      gap_multiplier: 0.8     # 间隙倍数
+    
+    # 启用插值补偿（对稀疏点云进行插值）
+    enable_interpolation: true
+    
+    # === 阶段3: 圆拟合验证 ===
+    circle_fit:
+      # 最大拟合误差3cm
+      max_fit_error: 0.03
+      # 最小内点比例50%
+      min_inlier_ratio: 0.5
+      # 近距离最大误差4cm（<3m）
+      max_fit_error_near: 0.04
+      # 远距离最大误差2cm（>3m）
+      max_fit_error_far: 0.02
+      # 远距离阈值3m
+      far_distance_threshold: 3.0
+    
+    # === 阶段3: 几何特征和描述子 ===
+    # 期望的反射柱直径 (米) - 5cm
+    expected_diameter: 0.05
+    
+    # 直径容差 (米)
+    diameter_tolerance: 0.03
+    
+    # 最小置信度阈值
+    min_confidence: 0.5
+    
+    # === 阶段4: 追踪系统 ===
+    # 启用追踪系统（ID匹配和点云融合）
+    enable_tracking: true
+    
+    # 追踪时间窗口（秒）- 超过此时间未检测到则删除追踪
+    tracking_time_gap: 2.0
+    
+    # 匹配相似度阈值（0-1范围）
+    match_threshold: 0.8
