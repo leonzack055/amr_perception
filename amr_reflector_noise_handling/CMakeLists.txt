@@ -56,6 +56,7 @@ target_link_libraries(reflector_noise_node ${PCL_LIBRARIES})
 add_executable(reflector_noise_bag_node
   src/reflector_noise_bag_node.cpp
   src/geometric_validator.cpp
+  src/types/msg_conversion.cpp
 )
 
 target_include_directories(reflector_noise_bag_node PUBLIC

@@ -31,81 +31,457 @@
 #include "amr_reflector_noise_handling/practical_descriptor.hpp"
 #include "amr_reflector_noise_handling/reflector_tracker.hpp"
 #include "amr_reflector_noise_handling/types.hpp"
+#include "amr_reflector_noise_handling/types/msg_conversion.hpp"
+#include "amr_reflector_noise_handling/types/reflector_common.hpp"
+#include <termios.h> // 终端控制头文件
+#include <unistd.h>  // STDIN_FILENO
 
 using namespace amr_reflector_noise_handling;
+
+// 关闭终端行缓冲和回显，实现无回车读单个字符
+char get_char_without_enter() {
+  struct termios old_attr, new_attr;
+  tcgetattr(STDIN_FILENO, &old_attr); // 获取原有终端属性
+  new_attr = old_attr;
+  new_attr.c_lflag &= ~(ICANON | ECHO); // 关闭行缓冲(ICANON)、关闭回显(ECHO)
+  tcsetattr(STDIN_FILENO, TCSANOW, &new_attr); // 立即应用新属性
+
+  char c = getchar(); // 此时无需回车，输入单个字符立即返回
+
+  tcsetattr(STDIN_FILENO, TCSANOW, &old_attr); // 恢复原有终端属性（必做！）
+  return c;
+}
+
+// 位姿点结构体（带时间戳）
+struct PosePoint {
+  double timestamp;         // 时间戳（秒）
+  transforms::Rigid3d pose; // 位姿（x,y,z,quat）
+
+  // 按时间戳排序
+  bool operator<(const PosePoint &other) const {
+    return timestamp < other.timestamp;
+  }
+};
+
+// 三次样条类（单维度，支持多边界条件）
+class CubicSpline1D {
+public:
+  // 边界条件类型
+  enum class BoundaryType {
+    NATURAL, // 自然样条：两端二阶导数=0
+    CLAMPED, // 夹紧样条：指定两端一阶导数（速度），两个端点的速度
+    PERIODIC // 周期样条：两端一阶/二阶导数连续（闭环轨迹）
+  };
+
+  // 构造函数：输入时间戳、采样值、边界条件
+  CubicSpline1D(const std::vector<double> &ts, const std::vector<double> &ys,
+                BoundaryType bc_type = BoundaryType::NATURAL,
+                double dy0 = 0.0, // 夹紧样条：t0处的一阶导数（速度）
+                double dyn = 0.0) // 夹紧样条：tn处的一阶导数（速度）
+  {
+    if (ts.size() != ys.size() || ts.size() < 2) {
+      throw std::runtime_error(
+          "采样点数量不足（至少2个）或时间戳/值长度不匹配");
+    }
+
+    // 保存时间戳和采样值（已排序）
+    ts_ = ts;
+    ys_ = ys;
+    n_ = ts.size() - 1; // 分段数 = 采样点数 - 1
+
+    // 计算相邻时间戳的间隔 h
+    hs_.resize(n_);
+    for (int i = 0; i < n_; ++i) {
+      hs_[i] = ts_[i + 1] - ts_[i];
+      if (hs_[i] <= 1e-6) {
+        throw std::runtime_error("时间戳重复或间隔过小");
+      }
+    }
+
+    // 求解二阶导数（m）：核心三对角方程组
+    solve_second_derivatives(bc_type, dy0, dyn);
+
+    // 预计算分段多项式的系数（a,b,c,d）：S_i(t) = a_i + b_i*(t-ti) +
+    // c_i*(t-ti)^2 + d_i*(t-ti)^3
+    compute_polynomial_coefficients();
+  }
+
+  // 插值任意时间戳的数值
+  double interpolate(double t) const {
+    // 找到t所在的分段区间
+    int idx = find_segment_index(t);
+    if (idx < 0)
+      return ys_.front(); // t < t0，返回第一个值
+    if (idx >= n_)
+      return ys_.back(); // t > tn，返回最后一个值
+
+    double dt = t - ts_[idx];
+    // 分段三次多项式：S_i(t) = a + b*dt + c*dt² + d*dt³
+    const auto &coeff = coeffs_[idx];
+    return coeff.a + coeff.b * dt + coeff.c * dt * dt + coeff.d * dt * dt * dt;
+  }
+
+  // 插值一阶导数（速度）
+  double derivative1(double t) const {
+    int idx = find_segment_index(t);
+    if (idx < 0 || idx >= n_)
+      return 0.0;
+
+    double dt = t - ts_[idx];
+    const auto &coeff = coeffs_[idx];
+    return coeff.b + 2 * coeff.c * dt + 3 * coeff.d * dt * dt;
+  }
+
+  // 插值二阶导数（加速度）
+  double derivative2(double t) const {
+    int idx = find_segment_index(t);
+    if (idx < 0 || idx >= n_)
+      return 0.0;
+
+    const auto &coeff = coeffs_[idx];
+    return 2 * coeff.c + 6 * coeff.d * (t - ts_[idx]);
+  }
+
+private:
+  // 分段多项式系数
+  struct Coeff {
+    double a, b, c, d;
+  };
+
+  std::vector<double> ts_;    // 时间戳
+  std::vector<double> ys_;    // 采样值
+  int n_;                     // 分段数
+  std::vector<double> hs_;    // 相邻时间戳间隔 h_i = t_{i+1} - t_i
+  std::vector<double> ms_;    // 二阶导数 m_i = S''(t_i)
+  std::vector<Coeff> coeffs_; // 分段多项式系数
+
+  // 找到t所在的分段索引
+  int find_segment_index(double t) const {
+    if (t <= ts_[0])
+      return -1;
+    if (t >= ts_.back())
+      return n_;
+
+    // 二分查找（高效）
+    int left = 0, right = n_;
+    while (left < right) {
+      int mid = (left + right) / 2;
+      if (ts_[mid + 1] > t) {
+        right = mid;
+      } else {
+        left = mid + 1;
+      }
+    }
+    return left;
+  }
+
+  // 求解二阶导数m（核心：三对角方程组）
+  void solve_second_derivatives(BoundaryType bc_type, double dy0, double dyn) {
+    ms_.resize(ts_.size(), 0.0);
+    std::vector<double> a(n_, 0.0), b(n_ + 1, 0.0), c(n_, 0.0), d(n_ + 1, 0.0);
+
+    // 构建三对角方程组：A*m = d
+    for (int i = 1; i < n_; ++i) {
+      a[i - 1] = hs_[i - 1];
+      b[i] = 2 * (hs_[i - 1] + hs_[i]);
+      c[i] = hs_[i];
+      d[i] = 6 * ((ys_[i + 1] - ys_[i]) / hs_[i] -
+                  (ys_[i] - ys_[i - 1]) / hs_[i - 1]);
+    }
+
+    // 应用边界条件
+    switch (bc_type) {
+    case BoundaryType::NATURAL: {
+      // 自然样条：m0=0, mn=0
+      b[0] = 1.0;
+      c[0] = 0.0;
+      d[0] = 0.0;
+      b[n_] = 1.0;
+      a[n_ - 1] = 0.0;
+      d[n_] = 0.0;
+      break;
+    }
+    case BoundaryType::CLAMPED: {
+      // 夹紧样条：指定m0和mn的约束（由一阶导数推导）
+      b[0] = 2 * hs_[0];
+      c[0] = hs_[0];
+      d[0] = 6 * ((ys_[1] - ys_[0]) / hs_[0] - dy0);
+
+      b[n_] = 2 * hs_[n_ - 1];
+      a[n_ - 1] = hs_[n_ - 1];
+      d[n_] = 6 * (dyn - (ys_[n_] - ys_[n_ - 1]) / hs_[n_ - 1]);
+      break;
+    }
+    case BoundaryType::PERIODIC: {
+      // 周期样条：m0=mn，S'(t0)=S'(tn)，S''(t0)=S''(tn)
+      // 重构方程组（简化版，仅适配周期场景）
+      b[0] = 2 * (hs_[0] + hs_[n_ - 1]);
+      c[0] = hs_[0];
+      a[0] = hs_[n_ - 1];
+      d[0] = 6 * ((ys_[1] - ys_[0]) / hs_[0] -
+                  (ys_[n_] - ys_[n_ - 1]) / hs_[n_ - 1]);
+
+      for (int i = 1; i < n_; ++i) {
+        a[i] = hs_[i - 1];
+        b[i] = 2 * (hs_[i - 1] + hs_[i]);
+        c[i] = hs_[i];
+        d[i] = 6 * ((ys_[i + 1] - ys_[i]) / hs_[i] -
+                    (ys_[i] - ys_[i - 1]) / hs_[i - 1]);
+      }
+      // 手动设置m0=mn
+      ms_[0] = ms_[n_];
+      break;
+    }
+    }
+
+    // 托马斯算法（追赶法）求解三对角方程组
+    thomas_algorithm(a, b, c, d, ms_);
+  }
+
+  // 托马斯算法：求解三对角方程组 A*x = b
+  void thomas_algorithm(const std::vector<double> &a,
+                        const std::vector<double> &b,
+                        const std::vector<double> &c,
+                        const std::vector<double> &d, std::vector<double> &x) {
+    int n = x.size();
+    std::vector<double> c_prime(n, 0.0), d_prime(n, 0.0);
+
+    // 前向消去
+    c_prime[0] = c[0] / b[0];
+    d_prime[0] = d[0] / b[0];
+    for (int i = 1; i < n; ++i) {
+      double temp = b[i] - a[i - 1] * c_prime[i - 1];
+      c_prime[i] = c[i] / temp;
+      d_prime[i] = (d[i] - a[i - 1] * d_prime[i - 1]) / temp;
+    }
+
+    // 反向回代
+    x[n - 1] = d_prime[n - 1];
+    for (int i = n - 2; i >= 0; --i) {
+      x[i] = d_prime[i] - c_prime[i] * x[i + 1];
+    }
+
+    // 周期样条补充：m0=mn
+    // if (bc_type == BoundaryType::PERIODIC) {
+    //   x[0] = x[n - 1];
+    // }
+  }
+
+  // 计算分段多项式系数
+  void compute_polynomial_coefficients() {
+    coeffs_.resize(n_);
+    for (int i = 0; i < n_; ++i) {
+      double h = hs_[i];
+      coeffs_[i].a = ys_[i];
+      coeffs_[i].b =
+          (ys_[i + 1] - ys_[i]) / h - h * (ms_[i + 1] + 2 * ms_[i]) / 6;
+      coeffs_[i].c = ms_[i] / 2;
+      coeffs_[i].d = (ms_[i + 1] - ms_[i]) / (6 * h);
+    }
+  }
+};
+
+class PoseCubicSpline {
+public:
+  // 构造函数：输入位姿采样点 + 位置边界条件
+  PoseCubicSpline(const std::vector<PosePoint> &pose_points,
+                  CubicSpline1D::BoundaryType pos_bc_type =
+                      CubicSpline1D::BoundaryType::NATURAL,
+                  double vx0 = 0.0,
+                  double vxn = 0.0, // x轴初始/结束速度（夹紧样条用）
+                  double vy0 = 0.0, double vyn = 0.0, // y轴初始/结束速度
+                  double vz0 = 0.0, double vzn = 0.0) // z轴初始/结束速度
+  {
+    // 1. 预处理：时间戳排序+去重
+    std::vector<PosePoint> sorted_poses = pose_points;
+    std::sort(sorted_poses.begin(), sorted_poses.end());
+    auto last = std::unique(sorted_poses.begin(), sorted_poses.end(),
+                            [](const PosePoint &a, const PosePoint &b) {
+                              return fabs(a.timestamp - b.timestamp) < 1e-6;
+                            });
+    sorted_poses.erase(last, sorted_poses.end());
+
+    if (sorted_poses.size() < 2) {
+      throw std::runtime_error("位姿采样点数量不足（至少2个）");
+    }
+
+    // 2. 提取各维度数据
+    std::vector<double> ts, xs, ys, zs;
+    std::vector<Eigen::Quaterniond> quats;
+    for (const auto &p : sorted_poses) {
+      ts.push_back(p.timestamp);
+      xs.push_back(p.pose.translation().x());
+      ys.push_back(p.pose.translation().y());
+      zs.push_back(p.pose.translation().z());
+      quats.push_back(p.pose.rotation().normalized());
+    }
+
+    // 3. 位置拟合（x/y/z分别用三次样条）
+    spline_x_ = std::make_unique<CubicSpline1D>(ts, xs, pos_bc_type, vx0, vxn);
+    spline_y_ = std::make_unique<CubicSpline1D>(ts, ys, pos_bc_type, vy0, vyn);
+    spline_z_ = std::make_unique<CubicSpline1D>(ts, zs, pos_bc_type, vz0, vzn);
+
+    // 4. 姿态拟合：偏航角用周期三次样条，四元数用SQUAD
+    // 保存四元数和时间戳（SQUAD插值用）
+    ts_ = ts;
+    quats_ = quats;
+  }
+
+  // 插值任意时间戳的位姿
+  PosePoint interpolate(double t) const {
+    PosePoint res;
+    res.timestamp = t;
+
+    // 1. 位置插值（三次样条）
+    double x = spline_x_->interpolate(t);
+    double y = spline_y_->interpolate(t);
+    double z = spline_z_->interpolate(t);
+
+    // 2. 四元数插值（SQUAD，C1连续）
+    Eigen::Quaterniond quat = interpolate_quaternion_squad(t);
+    res.pose = transforms::Rigid3d(Eigen::Vector3d(x, y, z), quat);
+    return res;
+  }
+
+private:
+  // 位置三次样条
+  std::unique_ptr<CubicSpline1D> spline_x_;
+  std::unique_ptr<CubicSpline1D> spline_y_;
+  std::unique_ptr<CubicSpline1D> spline_z_;
+
+  // 四元数插值相关
+  std::vector<double> ts_;
+  std::vector<Eigen::Quaterniond> quats_;
+
+  // SQUAD插值四元数（C1连续）
+  Eigen::Quaterniond interpolate_quaternion_squad(double t) const {
+    // 找到t所在区间
+    int idx = find_segment_index(t);
+    if (idx < 0)
+      return quats_.front();
+    if (idx >= (int)ts_.size() - 1)
+      return quats_.back();
+
+    int i0 = idx;
+    int i1 = idx + 1;
+    int i_prev = (i0 == 0) ? ts_.size() - 2 : i0 - 1; // 前一个点（周期处理）
+    int i_next = (i1 == (int)ts_.size() - 1) ? 1 : i1 + 1; // 后一个点
+
+    double t0 = ts_[i0];
+    double t1 = ts_[i1];
+    double s = (t - t0) / (t1 - t0);
+
+    // 计算SQUAD中间控制点
+    Eigen::Quaterniond a =
+        squad_intermediate(quats_[i_prev], quats_[i0], quats_[i1]);
+    Eigen::Quaterniond b =
+        squad_intermediate(quats_[i0], quats_[i1], quats_[i_next]);
+
+    // SQUAD插值
+    return squad(quats_[i0], quats_[i1], a, b, s);
+  }
+
+  // SQUAD中间控制点计算
+  Eigen::Quaterniond
+  squad_intermediate(const Eigen::Quaterniond &q_prev,
+                     const Eigen::Quaterniond &q_curr,
+                     const Eigen::Quaterniond &q_next) const {
+    Eigen::Quaterniond q_inv = q_curr.inverse();
+    return q_curr * ((q_inv * q_next).slerp(0.5, q_inv * q_prev)).normalized();
+  }
+
+  // SQUAD核心插值
+  Eigen::Quaterniond squad(const Eigen::Quaterniond &q0,
+                           const Eigen::Quaterniond &q1,
+                           const Eigen::Quaterniond &a,
+                           const Eigen::Quaterniond &b, double t) const {
+    double t2 = t * t;
+    double t3 = t2 * t;
+    double s = 2 * t3 - 3 * t2 + 1;
+    double v = t3 - 2 * t2 + t;
+    double w = t3 - t2;
+    double u = -2 * t3 + 3 * t2;
+
+    Eigen::Quaterniond q_slerp1 = q0.slerp(t, q1);
+    Eigen::Quaterniond q_slerp2 = a.slerp(t, b);
+    return q_slerp1.slerp(2 * t * (1 - t), q_slerp2).normalized();
+  }
+
+  // 找时间戳分段索引
+  int find_segment_index(double t) const {
+    if (t <= ts_[0])
+      return -1;
+    if (t >= ts_.back())
+      return (int)ts_.size() - 1;
+
+    int left = 0, right = (int)ts_.size() - 1;
+    while (left < right) {
+      int mid = (left + right) / 2;
+      if (ts_[mid + 1] > t) {
+        right = mid;
+      } else {
+        left = mid + 1;
+      }
+    }
+    return left;
+  }
+};
 
 /**
  * @brief Frame data structure for storing scan and odometry information
  */
-struct FrameData
-{
+struct FrameData {
   sensor_msgs::msg::LaserScan::SharedPtr scan;
-  nav_msgs::msg::Odometry::SharedPtr odom;
-  int64_t timestamp;  // nanoseconds
+  int64_t timestamp; // nanoseconds
   std::vector<int64_t> between_next_odoms;
   size_t odom_count;
-  size_t frame_index;  // laserscan的索引
+  size_t frame_index; // laserscan的索引
 
   // Compensated point cloud (after distortion correction)
   std::vector<Point> compensated_points;
+  std::vector<Point> filtered_points;
 
   // Detected reflectors
   std::vector<DetectedReflector> reflectors;
 
   // Global pose in world frame
-  geometry_msgs::msg::Pose global_pose;
+  transforms::Rigid3d global_pose;
 
-  FrameData() : frame_index(0)
-  {
-  }
+  FrameData() : frame_index(0) {}
 };
 
 /**
  * @brief Global pose tracking using odometry
  */
-class PoseTracker
-{
+class PoseTracker {
 public:
-  PoseTracker() : initialized_(false)
-  {
-  }
+  PoseTracker() : initialized_(false) {}
 
   /**
    * @brief Update global pose using odometry
    */
-  void update(const nav_msgs::msg::Odometry::SharedPtr odom)
-  {
-    if (!initialized_)
-    {
+  void
+  update(std::shared_ptr<FrameData> &laser_frame,
+         const std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr>
+             &odom_queue) {
+    // TODO: 使用OdometryQueue进行LaserScan数据的CSplines拟合
+    // 2. 使用CSpline进行插值求取laser帧各个扫描点的全局位姿；构建filtered点云
+    if (!initialized_) {
       // Initialize with first odometry
-      global_pose_ = odom->pose.pose;
-      initial_pose_ = odom->pose.pose;
       initialized_ = true;
       return;
     }
-
-    // Compute relative transform from previous to current odometry
-    geometry_msgs::msg::Transform relative_transform = computeRelativeTransform(prev_odom_, odom);
-
-    // Apply relative transform to global pose
-    applyTransform(global_pose_, relative_transform);
-
-    prev_odom_ = odom;
   }
 
   /**
    * @brief Get current global pose
    */
-  geometry_msgs::msg::Pose getGlobalPose() const
-  {
-    return global_pose_;
-  }
+  geometry_msgs::msg::Pose getGlobalPose() const { return global_pose_; }
 
   /**
    * @brief Reset tracker
    */
-  void reset()
-  {
+  void reset() {
     initialized_ = false;
     global_pose_ = geometry_msgs::msg::Pose();
     initial_pose_ = geometry_msgs::msg::Pose();
@@ -115,16 +491,15 @@ public:
   /**
    * @brief Get trajectory points
    */
-  const std::vector<geometry_msgs::msg::PoseStamped>& getTrajectory() const
-  {
+  const std::vector<geometry_msgs::msg::PoseStamped> &getTrajectory() const {
     return trajectory_;
   }
 
   /**
    * @brief Add trajectory point
    */
-  void addTrajectoryPoint(const geometry_msgs::msg::Pose& pose, const rclcpp::Time& time)
-  {
+  void addTrajectoryPoint(const geometry_msgs::msg::Pose &pose,
+                          const rclcpp::Time &time) {
     geometry_msgs::msg::PoseStamped pose_stamped;
     pose_stamped.pose = pose;
     pose_stamped.header.stamp = time;
@@ -142,15 +517,18 @@ private:
   /**
    * @brief Compute relative transform between two odometry poses
    */
-  geometry_msgs::msg::Transform computeRelativeTransform(const nav_msgs::msg::Odometry::SharedPtr odom1,
-                                                         const nav_msgs::msg::Odometry::SharedPtr odom2)
-  {
+  geometry_msgs::msg::Transform
+  computeRelativeTransform(const nav_msgs::msg::Odometry::SharedPtr odom1,
+                           const nav_msgs::msg::Odometry::SharedPtr odom2) {
     geometry_msgs::msg::Transform transform;
 
     // Compute relative translation
-    transform.translation.x = odom2->pose.pose.position.x - odom1->pose.pose.position.x;
-    transform.translation.y = odom2->pose.pose.position.y - odom1->pose.pose.position.y;
-    transform.translation.z = odom2->pose.pose.position.z - odom1->pose.pose.position.z;
+    transform.translation.x =
+        odom2->pose.pose.position.x - odom1->pose.pose.position.x;
+    transform.translation.y =
+        odom2->pose.pose.position.y - odom1->pose.pose.position.y;
+    transform.translation.z =
+        odom2->pose.pose.position.z - odom1->pose.pose.position.z;
 
     // Compute relative rotation (odom2 = odom1 * relative)
     tf2::Quaternion q1, q2, q_rel;
@@ -165,8 +543,8 @@ private:
   /**
    * @brief Apply transform to pose
    */
-  void applyTransform(geometry_msgs::msg::Pose& pose, const geometry_msgs::msg::Transform& transform)
-  {
+  void applyTransform(geometry_msgs::msg::Pose &pose,
+                      const geometry_msgs::msg::Transform &transform) {
     // Apply rotation
     tf2::Quaternion q_pose, q_transform;
     tf2::fromMsg(pose.orientation, q_pose);
@@ -175,7 +553,8 @@ private:
     pose.orientation = tf2::toMsg(q_new);
 
     // Apply translation (rotated into new frame)
-    tf2::Vector3 trans(transform.translation.x, transform.translation.y, transform.translation.z);
+    tf2::Vector3 trans(transform.translation.x, transform.translation.y,
+                       transform.translation.z);
     tf2::Vector3 rotated_trans = tf2::quatRotate(q_pose, trans);
     pose.position.x += rotated_trans.x();
     pose.position.y += rotated_trans.y();
@@ -185,50 +564,107 @@ private:
 
 /**
  * @brief Point cloud distortion correction using odometry
+ *  * 尝试使用laser时间片内的里程数据进行样条曲线拟合
+ * 1： xyz
+ * 使用CSplines，但这并不是最好，因为它不能处理旋转；对于差速轮模型，由于其是非完全模型；其平面速度方向，应该与朝向一致；
+ * 2： 对于旋转使用Squad进行角速度不变平滑；
+ * 3： 只针对laser帧前后的数据进行拟合；必须过数据点
+ * 4： 时间片内拟合； 不关心整体连续性；
  */
-class DistortionCorrector
-{
+class DistortionCorrector {
 public:
   /**
    * @brief Correct point cloud distortion using odometry between frames
    */
-  static std::vector<Point> correctDistortion(const sensor_msgs::msg::LaserScan::SharedPtr scan,
-                                              const nav_msgs::msg::Odometry::SharedPtr odom_start,
-                                              const nav_msgs::msg::Odometry::SharedPtr odom_end)
-  {
-    if (!odom_start || !odom_end)
-    {
-      // No odometry available, return original points
-      return convertScanToPoints(scan);
+  static std::vector<Point> correctDistortion(
+      std::shared_ptr<FrameData> &laser_frame,
+      const std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr>
+          &odom_queue,
+      const transforms::Rigid3d &laser_to_base) {
+    if (laser_frame->between_next_odoms.empty()) {
+      std::cerr << "当前laser的消息传递的消息为空" << std::endl;
+      return convertScanToPoints(laser_frame->scan);
     }
 
     std::vector<Point> corrected_points;
-    corrected_points.reserve(scan->ranges.size());
+    corrected_points.reserve(laser_frame->scan->ranges.size());
 
     // Convert scan to points first
-    auto original_points = convertScanToPoints(scan);
-
-    // Interpolate odometry for each scan point
-    for (size_t i = 0; i < scan->ranges.size(); ++i)
-    {
-      if (scan->ranges[i] < scan->range_min || scan->ranges[i] > scan->range_max || !std::isfinite(scan->ranges[i]))
-      {
+    auto original_points = convertScanToPoints(laser_frame->scan);
+    // 1. 获取laser帧前后两个里程数据
+    std::vector<PosePoint> odom_poses(laser_frame->between_next_odoms.size());
+    for (const auto odom_stamp : laser_frame->between_next_odoms) {
+      PosePoint tmp_pose;
+      tmp_pose.pose =
+          transforms::ToRigid3d(odom_queue.at(odom_stamp)->pose.pose);
+      tmp_pose.timestamp = odom_stamp * 1e-9;
+      odom_poses.emplace_back(tmp_pose);
+    }
+    // 2. 统计各点的里程计时间戳
+    // TODO: 当前激光雷达的原始数据并不准确；
+    // 扫描事件为时间片为0；只能以time_increment进行计算
+    std::vector<double> point_timestamps(original_points.size());
+    int less_cnt = 0;
+    int gt_cnt = 0;
+    for (const auto &odom_timestamp : laser_frame->between_next_odoms) {
+      if (laser_frame->timestamp < odom_timestamp)
+        less_cnt++;
+      else
+        gt_cnt++;
+    }
+    std::cerr << "当前laser的消息传递前后里程计消息数量: "
+              << laser_frame->between_next_odoms.size() << "负轴：" << less_cnt
+              << " 个；正轴: " << gt_cnt << "个" << std::endl;
+    // 3. 对于laser帧前后两个里程数据进行插值
+    PoseCubicSpline odom_spline(odom_poses);
+    // 4. 计算当前扫描点的里程计位姿
+    auto global_base_pose =
+        odom_spline.interpolate(laser_frame->timestamp * 1e-9);
+    laser_frame->global_pose = global_base_pose.pose * laser_to_base;
+    // 5. 计算每个点在短时里程计下的全局坐标
+    for (size_t i = 0; i < laser_frame->scan->ranges.size(); ++i) {
+      // 跳过无效点
+      if (laser_frame->scan->ranges[i] < laser_frame->scan->range_min ||
+          laser_frame->scan->ranges[i] > laser_frame->scan->range_max ||
+          !std::isfinite(laser_frame->scan->ranges[i])) {
         continue;
       }
-
-      // Compute scan time for this point
-      double scan_time = scan->scan_time;
-      double point_time = scan->time_increment * i;
-      double alpha = point_time / scan_time;  // 0 at start, 1 at end
-
+      // 计算相对于laser的点云
+      Point point;
+      double angle =
+          laser_frame->scan->angle_min + i * laser_frame->scan->angle_increment;
+      double range = laser_frame->scan->ranges[i];
+      point.x = range * std::cos(angle);
+      point.y = range * std::sin(angle);
+      if (i < laser_frame->scan->intensities.size()) {
+        point.intensity = laser_frame->scan->intensities[i];
+      } else {
+        point.intensity = 0.0;
+      }
+      double point_stamp =
+          laser_frame->timestamp * 1e-9 + i * laser_frame->scan->time_increment;
+      PosePoint stamp_odom = odom_spline.interpolate(point_stamp);
+      auto global_point = laser_frame->global_pose.inverse() * stamp_odom.pose *
+                          laser_to_base *
+                          Eigen::Vector3d(point.x, point.y, 0.0);
       // Interpolate odometry
-      auto interpolated_odom = interpolateOdometry(odom_start, odom_end, alpha);
+      // auto interpolated_odom = interpolateOdometry(odom_start, odom_end,
+      // alpha);
 
       // Transform point to world frame using interpolated odometry
-      Point corrected = transformPointToWorld(original_points[i], interpolated_odom);
-      corrected_points.push_back(corrected);
+      // Point corrected =
+      //     transformPointToWorld(original_points[i], interpolated_odom);
+      Point corrected_point;
+      corrected_point.x = global_point.x();
+      corrected_point.y = global_point.y();
+      if (i < laser_frame->scan->intensities.size()) {
+        corrected_point.intensity = laser_frame->scan->intensities[i];
+      }
+      else {
+        corrected_point.intensity = 0.0;
+      }
+      corrected_points.push_back(corrected_point);
     }
-
     return corrected_points;
   }
 
@@ -236,15 +672,14 @@ private:
   /**
    * @brief Convert laser scan to points
    */
-  static std::vector<Point> convertScanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg)
-  {
+  static std::vector<Point>
+  convertScanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
     std::vector<Point> points;
 
-    for (size_t i = 0; i < scan_msg->ranges.size(); ++i)
-    {
-      if (scan_msg->ranges[i] < scan_msg->range_min || scan_msg->ranges[i] > scan_msg->range_max ||
-          !std::isfinite(scan_msg->ranges[i]))
-      {
+    for (size_t i = 0; i < scan_msg->ranges.size(); ++i) {
+      if (scan_msg->ranges[i] < scan_msg->range_min ||
+          scan_msg->ranges[i] > scan_msg->range_max ||
+          !std::isfinite(scan_msg->ranges[i])) {
         continue;
       }
 
@@ -255,12 +690,9 @@ private:
       point.x = range * std::cos(angle);
       point.y = range * std::sin(angle);
 
-      if (i < scan_msg->intensities.size())
-      {
+      if (i < scan_msg->intensities.size()) {
         point.intensity = scan_msg->intensities[i];
-      }
-      else
-      {
+      } else {
         point.intensity = 0.0;
       }
 
@@ -271,36 +703,11 @@ private:
   }
 
   /**
-   * @brief Interpolate odometry between two poses
-   */
-  static geometry_msgs::msg::Pose interpolateOdometry(const nav_msgs::msg::Odometry::SharedPtr odom1,
-                                                      const nav_msgs::msg::Odometry::SharedPtr odom2, double alpha)
-  {
-    geometry_msgs::msg::Pose interpolated;
-
-    // Interpolate position
-    interpolated.position.x =
-        odom1->pose.pose.position.x + alpha * (odom2->pose.pose.position.x - odom1->pose.pose.position.x);
-    interpolated.position.y =
-        odom1->pose.pose.position.y + alpha * (odom2->pose.pose.position.y - odom1->pose.pose.position.y);
-    interpolated.position.z =
-        odom1->pose.pose.position.z + alpha * (odom2->pose.pose.position.z - odom1->pose.pose.position.z);
-
-    // Interpolate orientation using SLERP
-    tf2::Quaternion q1, q2;
-    tf2::fromMsg(odom1->pose.pose.orientation, q1);
-    tf2::fromMsg(odom2->pose.pose.orientation, q2);
-    tf2::Quaternion q_interp = q1.slerp(q2, alpha);
-    interpolated.orientation = tf2::toMsg(q_interp);
-
-    return interpolated;
-  }
-
-  /**
    * @brief Transform point from laser frame to world frame
    */
-  static Point transformPointToWorld(const Point& point, const geometry_msgs::msg::Pose& odom_pose)
-  {
+  static Point
+  transformPointToWorld(const Point &point,
+                        const geometry_msgs::msg::Pose &odom_pose) {
     Point world_point;
 
     // Rotate point by odometry orientation
@@ -321,12 +728,11 @@ private:
 /**
  * @brief Interactive bag processing node
  */
-class ReflectorNoiseBagNode : public rclcpp::Node
-{
+class ReflectorNoiseBagNode : public rclcpp::Node {
 public:
   ReflectorNoiseBagNode()
-    : Node("reflector_noise_bag_node"), current_frame_index_(0), auto_mode_(false), should_exit_(false)
-  {
+      : Node("reflector_noise_bag_node"), current_frame_index_(0),
+        auto_mode_(false), should_exit_(false) {
     // Declare parameters
     this->declare_parameter("bag_path", "");
     this->declare_parameter("scan_topic", "/scan");
@@ -342,29 +748,39 @@ public:
     bag_path_ = this->get_parameter("bag_path").as_string();
     scan_topic_ = this->get_parameter("scan_topic").as_string();
     odom_topic_ = this->get_parameter("odom_topic").as_string();
-    classification_method_ = this->get_parameter("classification_method").as_string();
-    raw_intensity_threshold_ = this->get_parameter("raw_intensity_threshold").as_double();
+    classification_method_ =
+        this->get_parameter("classification_method").as_string();
+    raw_intensity_threshold_ =
+        this->get_parameter("raw_intensity_threshold").as_double();
     expected_diameter_ = this->get_parameter("expected_diameter").as_double();
     diameter_tolerance_ = this->get_parameter("diameter_tolerance").as_double();
-    enable_interpolation_ = this->get_parameter("enable_interpolation").as_bool();
+    enable_interpolation_ =
+        this->get_parameter("enable_interpolation").as_bool();
     min_confidence_ = this->get_parameter("min_confidence").as_double();
 
     // Configure detection modules
     configureDetectionModules();
 
     // Create publisher for visualization
-    filtered_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_cloud", 10);
-    cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/reflector_cluster_cloud", 10);
+    filtered_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+        "/filtered_cloud", 10);
+    cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+        "/reflector_cluster_cloud", 10);
     compensated_cluster_pub_ =
-        this->create_publisher<sensor_msgs::msg::PointCloud2>("/reflector_compensated_cluster_cloud", 10);
-    trajectory_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/reflector_bag_trajectory", 10);
-    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/reflector_detected_markers", 10);
+        this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "/reflector_compensated_cluster_cloud", 10);
+    trajectory_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+        "/reflector_bag_trajectory", 10);
+    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+        "/reflector_detected_markers", 10);
     tracked_marker_pub_ =
-        this->create_publisher<visualization_msgs::msg::MarkerArray>("/reflector_tracked_markers", 10);
+        this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/reflector_tracked_markers", 10);
 
     // Create timer for continuous publishing (10 Hz)
-    publish_timer_ = this->create_wall_timer(std::chrono::milliseconds(100),
-                                             std::bind(&ReflectorNoiseBagNode::publishTimerCallback, this));
+    publish_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(100),
+        std::bind(&ReflectorNoiseBagNode::publishTimerCallback, this));
 
     RCLCPP_INFO(this->get_logger(), "反光柱逐帧检测节点初始化完成");
     RCLCPP_INFO(this->get_logger(), "Bag路径: %s", bag_path_.c_str());
@@ -375,11 +791,10 @@ public:
   /**
    * @brief Run the bag processing
    */
-  void run()
-  {
-    if (bag_path_.empty())
-    {
-      RCLCPP_ERROR(this->get_logger(), "Bag路径未设置，请使用--ros-args -p bag_path:=<path>");
+  void run() {
+    if (bag_path_.empty()) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Bag路径未设置，请使用--ros-args -p bag_path:=<path>");
       return;
     }
 
@@ -391,14 +806,13 @@ public:
     rosbag2_cpp::ConverterOptions converter_options;
     reader.open(storage_options, converter_options);
     RCLCPP_INFO(this->get_logger(), "打开Bag文件: %s", bag_path_.c_str());
-    for (auto& topic : reader.get_all_topics_and_types())
-    {
-      RCLCPP_INFO(this->get_logger(), "Topic: %s, Type: %s", topic.name.c_str(), topic.type.c_str());
+    for (auto &topic : reader.get_all_topics_and_types()) {
+      RCLCPP_INFO(this->get_logger(), "Topic: %s, Type: %s", topic.name.c_str(),
+                  topic.type.c_str());
     }
 
     // Pre-load all frames
-    if (!loadAllFrames(reader))
-    {
+    if (!loadAllFrames(reader)) {
       RCLCPP_ERROR(this->get_logger(), "加载帧失败");
       return;
     }
@@ -406,7 +820,8 @@ public:
     RCLCPP_INFO(this->get_logger(), "加载完成，共 %zu 帧", frames_.size());
 
     // Start keyboard input thread
-    std::thread input_thread(&ReflectorNoiseBagNode::keyboardInputThread, this);
+    std::thread input_thread(&ReflectorNoiseBagNode::keyboardInputThread,
+    this);
 
     // Process first frame
     processFrame(0);
@@ -416,7 +831,7 @@ public:
 
     // Wait for input thread to finish
     should_exit_ = true;
-    input_thread.join();
+    // input_thread.join();
 
     RCLCPP_INFO(this->get_logger(), "处理完成");
   }
@@ -425,8 +840,7 @@ private:
   /**
    * @brief Configure detection modules
    */
-  void configureDetectionModules()
-  {
+  void configureDetectionModules() {
     // Configure circle fitter
     CircleFitParams circle_params;
     circle_params.max_fit_error = 0.03;
@@ -462,106 +876,103 @@ private:
 
   /**
    * @brief Load all frames from bag
+   * WARN: 由于里程计前后时间跳变, 这里选用录包时刻的系统时间戳
    */
-  bool loadAllFrames(rosbag2_cpp::Reader& reader)
-  {
-    std::unordered_map<int64_t, sensor_msgs::msg::LaserScan::SharedPtr> scan_map;  // Map of scan messages by timestamp
-    std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr> odom_map;
-    std::vector<int64_t> odom_timestamps;  // Vector of frames
-    std::vector<int64_t> scan_timestamps;
-    int64_t peek_time = 0;  // Peek time for next message
+  bool loadAllFrames(rosbag2_cpp::Reader &reader) {
+    int64_t peek_time = 0; // Peek time for next message
 
-    auto laser_scan_serializer = rclcpp::Serialization<sensor_msgs::msg::LaserScan>();
+    auto laser_scan_serializer =
+        rclcpp::Serialization<sensor_msgs::msg::LaserScan>();
     // auto imu_serializer = rclcpp::Serialization<sensor_msgs::msg::Imu>();
     auto odom_serializer = rclcpp::Serialization<nav_msgs::msg::Odometry>();
     auto tf_serializer = rclcpp::Serialization<tf2_msgs::msg::TFMessage>();
+    int64_t last_odom_stamp = 0;
+    int64_t last_scan_stamp = 0;
 
     // Read all messages
-    RCLCPP_INFO(this->get_logger(), "开始读取rosbag包: %s ..... ", bag_path_.c_str());
-    while (reader.has_next())
-    {
+    RCLCPP_INFO(this->get_logger(), "开始读取rosbag包: %s ..... ",
+                bag_path_.c_str());
+    while (reader.has_next()) {
       rosbag2_storage::SerializedBagMessageSharedPtr msg = reader.read_next();
 
       // Deserialize message
       rclcpp::SerializedMessage serialized_msg(*msg->serialized_data);
-      if (msg->time_stamp > peek_time)
-      {
+      if (msg->time_stamp > peek_time) {
         peek_time = msg->time_stamp;
-      }
-      else
-      {
-        RCLCPP_ERROR(this->get_logger(), "录制的rosbag包出现前后事件跳变: 消息 %s, %ld", msg->topic_name.c_str(),
-                     msg->time_stamp);
+      } else {
+        RCLCPP_ERROR(this->get_logger(),
+                     "录制的rosbag包出现前后事件跳变: 消息 %s, %ld",
+                     msg->topic_name.c_str(), msg->time_stamp);
       }
       // Process based on topic
-      if (msg->topic_name == scan_topic_)
-      {
-        RCLCPP_INFO_STREAM(this->get_logger(), "读取scan消息: ");
+      if (msg->topic_name == scan_topic_) {
         auto scan = std::make_shared<sensor_msgs::msg::LaserScan>();
         rclcpp::Serialization<sensor_msgs::msg::LaserScan> serialization;
         laser_scan_serializer.deserialize_message(&serialized_msg, scan.get());
-        if (scan_map.find(rclcpp::Time(msg->time_stamp).nanoseconds()) == scan_map.end())
-        {
-          scan_map[rclcpp::Time(msg->time_stamp).nanoseconds()] = scan;
-          scan_timestamps.push_back(rclcpp::Time(msg->time_stamp).nanoseconds());
+        if (scan_map_.find(rclcpp::Time(msg->time_stamp).nanoseconds()) ==
+            scan_map_.end()) {
+          scan_map_[rclcpp::Time(msg->time_stamp).nanoseconds()] = scan;
+          scan_timestamps_.push_back(
+              rclcpp::Time(msg->time_stamp).nanoseconds());
+          assert(last_scan_stamp < rclcpp::Time(msg->time_stamp).nanoseconds());
+          last_scan_stamp = rclcpp::Time(msg->time_stamp).nanoseconds();
+        } else {
+          RCLCPP_ERROR_STREAM(this->get_logger(),
+                              "读取scan消息: "
+                                  << " bag timestamp: " << msg->time_stamp
+                                  << "存在重复时间戳");
         }
-        else
-        {
-          RCLCPP_ERROR_STREAM(this->get_logger(), "读取scan消息: "
-                                                      << " bag timestamp: " << msg->time_stamp << "存在重复时间戳");
-        }
-        RCLCPP_INFO_STREAM(this->get_logger(), "完成读取scan消息: ");
-      }
-      else if (msg->topic_name == odom_topic_)
-      {
-        RCLCPP_INFO_STREAM(this->get_logger(), "读取odom消息: ");
+      } else if (msg->topic_name == odom_topic_) {
         auto odom = std::make_shared<nav_msgs::msg::Odometry>();
         odom_serializer.deserialize_message(&serialized_msg, odom.get());
-        if (odom_map.find(rclcpp::Time(msg->time_stamp).nanoseconds()) == odom_map.end())
-        {
-          odom_map[rclcpp::Time(msg->time_stamp).nanoseconds()] = odom;
-          odom_timestamps.push_back(rclcpp::Time(msg->time_stamp).nanoseconds());
+        if (odom_map_.find(rclcpp::Time(odom->header.stamp).nanoseconds()) ==
+            odom_map_.end()) {
+          odom_map_[rclcpp::Time(odom->header.stamp).nanoseconds()] = odom;
+          odom_timestamps_.push_back(
+              rclcpp::Time(odom->header.stamp).nanoseconds());
+          assert(last_odom_stamp <
+                 rclcpp::Time(odom->header.stamp).nanoseconds());
+          last_odom_stamp = rclcpp::Time(odom->header.stamp).nanoseconds();
+        } else {
+          RCLCPP_ERROR_STREAM(this->get_logger(),
+                              "读取odom消息: "
+                                  << " bag timestamp: " << msg->time_stamp
+                                  << "存在重复时间戳");
         }
-        else
-        {
-          RCLCPP_ERROR_STREAM(this->get_logger(), "读取odom消息: "
-                                                      << " bag timestamp: " << msg->time_stamp << "存在重复时间戳");
-        }
-        odom_map[rclcpp::Time(msg->time_stamp).nanoseconds()] = odom;
-        odom_timestamps.push_back(rclcpp::Time(msg->time_stamp).nanoseconds());
-        RCLCPP_INFO_STREAM(this->get_logger(), "完成读取odom消息: ");
-      }
-      else if (msg->topic_name == "/tf_static")
-      {
+      } else if (msg->topic_name == "/tf_static") {
         // Read tf_static for laser_scan to base_link transform
         auto tf_msg = std::make_shared<tf2_msgs::msg::TFMessage>();
-        try
-        {
+        try {
           tf_serializer.deserialize_message(&serialized_msg, tf_msg.get());
-          for (auto& transform : tf_msg->transforms)
-          {
-            if (transform.header.frame_id == "base_link" && transform.child_frame_id == "laser")
-            {
+          for (auto &transform : tf_msg->transforms) {
+            if (transform.header.frame_id == "base_link" &&
+                transform.child_frame_id == "laser") {
               laser_to_base_ = transform;
-              RCLCPP_INFO(this->get_logger(), "找到laser到base_link的变换: (%.3f, %.3f)",
-                          transform.transform.translation.x, transform.transform.translation.y);
+              RCLCPP_INFO(this->get_logger(),
+                          "找到laser到base_link的变换: (%.3f, %.3f)",
+                          transform.transform.translation.x,
+                          transform.transform.translation.y);
             }
           }
-        }
-        catch (const rclcpp::exceptions::RCLError& rcl_error)
-        {
-          RCLCPP_ERROR_STREAM(this->get_logger(), "解析TF_STATIC发生错误" << rcl_error.what());
+        } catch (const rclcpp::exceptions::RCLError &rcl_error) {
+          RCLCPP_ERROR_STREAM(this->get_logger(),
+                              "解析TF_STATIC发生错误" << rcl_error.what());
         }
       }
     }
-    RCLCPP_INFO_STREAM(this->get_logger(), "完成读取rosbag包:  ..... "<< bag_path_);
+    RCLCPP_INFO_STREAM(this->get_logger(),
+                       "完成读取rosbag包:  ..... " << bag_path_);
     // 展示整体队列和信息内容:
-    RCLCPP_INFO_STREAM(this->get_logger(), "激光雷达队列信息: " << scan_map.size() << "帧, 起始范围: ["
-                                                                << scan_timestamps.front() << " , "
-                                                                << scan_timestamps.back() << "]");
-    RCLCPP_INFO_STREAM(this->get_logger(), "里程计队列信息: " << odom_map.size() << "帧, 起始范围: ["
-                                                              << scan_timestamps.front() << " , "
-                                                              << scan_timestamps.back() << "]");
+    RCLCPP_INFO_STREAM(this->get_logger(),
+                       "激光雷达队列信息: " << scan_map_.size()
+                                            << "帧, 起始范围: ["
+                                            << scan_timestamps_.front() << " , "
+                                            << scan_timestamps_.back() << "]");
+    RCLCPP_INFO_STREAM(this->get_logger(),
+                       "里程计队列信息: " << odom_map_.size()
+                                          << "帧, 起始范围: ["
+                                          << scan_timestamps_.front() << " , "
+                                          << scan_timestamps_.back() << "]");
     // 为激光数据进行里程计计算
     // 1. C-Splines拟合算法
     // TODO: 此处应该直接使用
@@ -576,30 +987,27 @@ private:
     // 进行数据关联，并利用此范围内数据进行拟合;
     // 当接收到laser2时，永远以2帧为1拍进行数据关联
     size_t frame_idx = 0;
-    std::vector<int64_t>::const_iterator odom_peek = odom_timestamps.cbegin();
-    std::sort(scan_timestamps.begin(), scan_timestamps.end());
-    std::sort(odom_timestamps.begin(), odom_timestamps.end());
-    for (std::vector<int64_t>::const_iterator scan_iterator = scan_timestamps.cbegin();
-         scan_iterator < scan_timestamps.cend() - 1; ++scan_iterator)
-    {
-      const auto& next_scan_iterator = scan_iterator + 1;
-      const auto& scan_time = *scan_iterator;
-      const auto& next_scan_time = *next_scan_iterator;
+    std::vector<int64_t>::const_iterator odom_peek = odom_timestamps_.cbegin();
+    std::sort(scan_timestamps_.begin(), scan_timestamps_.end());
+    std::sort(odom_timestamps_.begin(), odom_timestamps_.end());
+    for (std::vector<int64_t>::const_iterator scan_iterator =
+             scan_timestamps_.cbegin();
+         scan_iterator < scan_timestamps_.cend() - 1; ++scan_iterator) {
+      const auto &next_scan_iterator = scan_iterator + 1;
+      const auto &scan_time = *scan_iterator;
+      const auto &next_scan_time = *next_scan_iterator;
       auto frame = std::make_shared<FrameData>();
-      frame->scan = scan_map[scan_time];
+      frame->scan = scan_map_[scan_time];
       frame->timestamp = scan_time;
       frame->frame_index = frame_idx++;
       // Find closest odometry
       std::vector<int64_t>::const_iterator keep_odom_peek = odom_peek;
-      for (; odom_peek < odom_timestamps.cend(); ++odom_peek)
-      {
-        if (*odom_peek <= scan_time)
-        {
+      for (; odom_peek < odom_timestamps_.cend(); ++odom_peek) {
+        if (*odom_peek <= scan_time) {
           frame->between_next_odoms.push_back(*odom_peek);
-          keep_odom_peek++;  // 保留当前的odom_peek，用于下一次迭代，查找相邻帧的数据
+          keep_odom_peek++; // 保留当前的odom_peek，用于下一次迭代，查找相邻帧的数据
         }
-        if (*odom_peek > scan_time && *odom_peek < next_scan_time)
-        {
+        if (*odom_peek > scan_time && *odom_peek < next_scan_time) {
           frame->between_next_odoms.push_back(*odom_peek);
         }
       }
@@ -609,26 +1017,27 @@ private:
     }
     RCLCPP_INFO(this->get_logger(), "激光雷达数据为: %d帧", frames_.size());
     // 补偿最后一帧激光雷达的odom数据虽然它可能只有一半
-    if (odom_peek < odom_timestamps.cend())
-    {
-      for (std::vector<int64_t>::const_iterator scan_iterator = scan_timestamps.cend() - 1;
-           scan_iterator < scan_timestamps.cend(); ++scan_iterator)
-      {
-        const auto& scan_time = *scan_iterator;
+    if (odom_peek < odom_timestamps_.cend()) {
+      for (std::vector<int64_t>::const_iterator scan_iterator =
+               scan_timestamps_.cend() - 1;
+           scan_iterator < scan_timestamps_.cend(); ++scan_iterator) {
+        const auto &scan_time = *scan_iterator;
         auto frame = std::make_shared<FrameData>();
-        frame->scan = scan_map[scan_time];
+        frame->scan = scan_map_[scan_time];
         frame->timestamp = scan_time;
         frame->frame_index = frame_idx++;
-        for (; odom_peek < odom_timestamps.cend(); ++odom_peek)
-        {
-          if (*odom_peek <= scan_time)
-          {
+        for (; odom_peek < odom_timestamps_.cend(); ++odom_peek) {
+          if (*odom_peek <= scan_time) {
+            frame->between_next_odoms.push_back(*odom_peek);
+          }
+          if (*odom_peek > scan_time) {
             frame->between_next_odoms.push_back(*odom_peek);
           }
         }
         frames_.push_back(frame);
-        RCLCPP_INFO(this->get_logger(), "补偿激光雷达数据为: %d帧, 使用的里程计数据: %ld帧", frames_.size(),
-                    frame->between_next_odoms.size());
+        RCLCPP_INFO(this->get_logger(),
+                    "补偿激光雷达数据为: %d帧, 使用的里程计数据: %ld帧",
+                    frames_.size(), frame->between_next_odoms.size());
       }
     }
     return !frames_.empty();
@@ -637,67 +1046,64 @@ private:
   /**
    * @brief Process a single frame
    */
-  void processFrame(size_t frame_index)
-  {
-    if (frame_index >= frames_.size())
-    {
-      RCLCPP_WARN(this->get_logger(), "帧索引超出范围: %zu/%zu", frame_index, frames_.size());
+  void processFrame(size_t frame_index) {
+    if (frame_index >= frames_.size()) {
+      RCLCPP_WARN(this->get_logger(), "帧索引超出范围: %zu/%zu", frame_index,
+                  frames_.size());
       return;
     }
 
     current_frame_index_ = frame_index;
-    auto& frame = frames_[frame_index];
+    auto &frame = frames_[frame_index];
 
-    RCLCPP_INFO(this->get_logger(), "处理帧 %zu/%zu, 时间: %.3f", frame_index, frames_.size() - 1,
-                rclcpp::Time(frame->timestamp).seconds());
+    RCLCPP_INFO(this->get_logger(), "处理帧 %zu/%zu, 时间: %.3f", frame_index,
+                frames_.size() - 1, rclcpp::Time(frame->timestamp).seconds());
 
+    frame->compensated_points =
+        DistortionCorrector::correctDistortion(frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
     // Update global pose tracker
-    if (frame->odom)
-    {
-      pose_tracker_.update(frame->odom);
-      frame->global_pose = pose_tracker_.getGlobalPose();
-      pose_tracker_.addTrajectoryPoint(frame->global_pose, rclcpp::Time(frame->timestamp));
-    }
+    // if (frame->odom) {
+    //   pose_tracker_.update(frame->odom);
+    //   frame->global_pose = pose_tracker_.getGlobalPose();
+    //   pose_tracker_.addTrajectoryPoint(frame->global_pose,
+    //                                    rclcpp::Time(frame->timestamp));
+    // }
 
-    // Apply distortion correction
-    if (frame_index > 0 && frame->odom && frames_[frame_index - 1]->odom)
-    {
-      frame->compensated_points =
-          DistortionCorrector::correctDistortion(frame->scan, frames_[frame_index - 1]->odom, frame->odom);
-      RCLCPP_INFO(this->get_logger(), "应用畸变校正");
-    }
-    else
-    {
-      // No previous odometry, convert directly
-      frame->compensated_points = convertScanToPoints(frame->scan);
-    }
+    // // Apply distortion correction
+    // if (frame_index > 0 && frame->odom && frames_[frame_index - 1]->odom) {
+    //   frame->compensated_points = DistortionCorrector::correctDistortion(
+    //       frame->scan, frames_[frame_index - 1]->odom, frame->odom);
+    //   RCLCPP_INFO(this->get_logger(), "应用畸变校正");
+    // } else {
+    //   // No previous odometry, convert directly
+    //   frame->compensated_points = convertScanToPoints(frame->scan);
+    // }
 
     // Apply intensity filtering
-    auto filtered_points = filterByIntensity(frame->compensated_points, raw_intensity_threshold_);
+    auto filtered_points =
+        filterByIntensity(frame->compensated_points, raw_intensity_threshold_);
 
-    RCLCPP_INFO(this->get_logger(), "原始点数: %zu, 强度过滤后: %zu", frame->compensated_points.size(),
-                filtered_points.size());
+    RCLCPP_INFO(this->get_logger(), "原始点数: %zu, 强度过滤后: %zu",
+                frame->compensated_points.size(), filtered_points.size());
 
     // DBSCAN clustering
     auto cluster_indices = fixed_dbscan_.cluster(filtered_points);
 
-    if (cluster_indices.empty())
-    {
+    if (cluster_indices.empty()) {
       RCLCPP_DEBUG(this->get_logger(), "DBSCAN聚类后无簇");
       frame->reflectors.clear();
       return;
     }
 
-    RCLCPP_DEBUG(this->get_logger(), "DBSCAN聚类得到 %zu 个簇", cluster_indices.size());
+    RCLCPP_DEBUG(this->get_logger(), "DBSCAN聚类得到 %zu 个簇",
+                 cluster_indices.size());
 
     // Convert indices to clusters
     std::vector<std::vector<Point>> clusters;
-    for (const auto& indices : cluster_indices)
-    {
+    for (const auto &indices : cluster_indices) {
       std::vector<Point> cluster;
       cluster.reserve(indices.size());
-      for (int idx : indices)
-      {
+      for (int idx : indices) {
         cluster.push_back(filtered_points[idx]);
       }
       clusters.push_back(cluster);
@@ -706,7 +1112,8 @@ private:
     // Detect reflectors
     detectReflectors(clusters, frame->reflectors);
 
-    RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱", frame->reflectors.size());
+    RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
+                frame->reflectors.size());
 
     // Visualization data is ready, will be published by timer
   }
@@ -714,57 +1121,56 @@ private:
   /**
    * @brief Detect reflectors from clusters
    */
-  void detectReflectors(const std::vector<std::vector<Point>>& clusters, std::vector<DetectedReflector>& reflectors)
-  {
+  void detectReflectors(const std::vector<std::vector<Point>> &clusters,
+                        std::vector<DetectedReflector> &reflectors) {
     reflectors.clear();
 
-    for (size_t idx = 0; idx < clusters.size(); ++idx)
-    {
-      const auto& cluster = clusters[idx];
+    for (size_t idx = 0; idx < clusters.size(); ++idx) {
+      const auto &cluster = clusters[idx];
       Point center = computeCentroid(cluster);
       double distance = center.distanceFromOrigin();
 
       // Classification
       bool is_reflector_candidate = false;
 
-      if (classification_method_ == "pca")
-      {
-        auto pca_features = pca_classifier_.computeShapeFeatures(cluster, circle_fitter_);
+      if (classification_method_ == "pca") {
+        auto pca_features =
+            pca_classifier_.computeShapeFeatures(cluster, circle_fitter_);
         auto circle_fit_temp = circle_fitter_.fitCircle(cluster);
-        auto object_type = pca_classifier_.classifyObject(pca_features, circle_fit_temp);
+        auto object_type =
+            pca_classifier_.classifyObject(pca_features, circle_fit_temp);
 
         is_reflector_candidate = (object_type == REFLECTOR_POST);
 
-        RCLCPP_DEBUG(this->get_logger(), "簇 %zu: 延伸度=%.2f, 线性度=%.2f, 圆形度=%.2f, 类型=%s", idx,
-                     pca_features.elongation, pca_features.linearity, pca_features.circularity,
+        RCLCPP_DEBUG(this->get_logger(),
+                     "簇 %zu: 延伸度=%.2f, 线性度=%.2f, 圆形度=%.2f, 类型=%s",
+                     idx, pca_features.elongation, pca_features.linearity,
+                     pca_features.circularity,
                      is_reflector_candidate ? "反光柱" : "其他");
       }
 
-      if (!is_reflector_candidate)
-      {
+      if (!is_reflector_candidate) {
         continue;
       }
 
       // Interpolation
       auto processed_cluster = cluster;
-      if (enable_interpolation_)
-      {
-        processed_cluster = improved_interpolator_.interpolateCluster(cluster, center, distance);
+      if (enable_interpolation_) {
+        processed_cluster = improved_interpolator_.interpolateCluster(
+            cluster, center, distance);
       }
 
       // Circle fitting
       auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
 
-      if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance))
-      {
+      if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
         continue;
       }
 
       // Compute confidence
       double confidence = computeConfidence(cluster, circle_fit);
 
-      if (confidence >= min_confidence_)
-      {
+      if (confidence >= min_confidence_) {
         DetectedReflector reflector;
         reflector.center = circle_fit.center;
         reflector.diameter = 2 * circle_fit.radius;
@@ -773,8 +1179,10 @@ private:
 
         reflectors.push_back(reflector);
 
-        RCLCPP_INFO(this->get_logger(), "反光柱 %zu: 中心(%.3f,%.3f), 直径=%.3fm, 置信度=%.3f", reflectors.size(),
-                    reflector.center.x, reflector.center.y, reflector.diameter, confidence);
+        RCLCPP_INFO(this->get_logger(),
+                    "反光柱 %zu: 中心(%.3f,%.3f), 直径=%.3fm, 置信度=%.3f",
+                    reflectors.size(), reflector.center.x, reflector.center.y,
+                    reflector.diameter, confidence);
       }
     }
   }
@@ -782,8 +1190,8 @@ private:
   /**
    * @brief Compute confidence for a detected reflector
    */
-  double computeConfidence([[maybe_unused]] const std::vector<Point>& cluster, const CircleFitResult& circle_fit)
-  {
+  double computeConfidence([[maybe_unused]] const std::vector<Point> &cluster,
+                           const CircleFitResult &circle_fit) {
     // Simple confidence based on fit quality
     double fit_quality = 1.0 - std::min(1.0, circle_fit.fit_error / 0.03);
     double inlier_quality = circle_fit.inlier_ratio;
@@ -794,14 +1202,12 @@ private:
   /**
    * @brief Timer callback for continuous publishing
    */
-  void publishTimerCallback()
-  {
-    if (current_frame_index_ >= frames_.size())
-    {
+  void publishTimerCallback() {
+    if (current_frame_index_ >= frames_.size()) {
       return;
     }
 
-    const auto& frame = frames_[current_frame_index_];
+    const auto &frame = frames_[current_frame_index_];
 
     // Publish point cloud with current timestamp
     publishPointCloud(frame->compensated_points);
@@ -816,60 +1222,55 @@ private:
   /**
    * @brief Keyboard input thread
    */
-  void keyboardInputThread()
-  {
+  void keyboardInputThread() {
     RCLCPP_INFO(this->get_logger(), "键盘控制:");
     RCLCPP_INFO(this->get_logger(), "  'n' - 下一帧");
     RCLCPP_INFO(this->get_logger(), "  'p' - 上一帧");
     RCLCPP_INFO(this->get_logger(), "  ' ' (空格) - 切换自动模式");
     RCLCPP_INFO(this->get_logger(), "  'q' - 退出");
 
-    while (!should_exit_)
-    {
-      char key = std::getchar();
+    while (!should_exit_) {
+      char key = get_char_without_enter();
+      RCLCPP_INFO(this->get_logger(), "Key: %c", key);
+      switch (key) {
+      case 'n':
+      case 'N':
+        if (current_frame_index_ < frames_.size() - 1) {
+          // processFrame(current_frame_index_ + 1);
+          RCLCPP_INFO(this->get_logger(), "处理下一帧");
+        } else {
+          RCLCPP_WARN(this->get_logger(), "已是最后一帧");
+        }
+        break;
 
-      switch (key)
-      {
-        case 'n':
-        case 'N':
-          if (current_frame_index_ < frames_.size() - 1)
-          {
-            processFrame(current_frame_index_ + 1);
-          }
-          else
-          {
-            RCLCPP_WARN(this->get_logger(), "已是最后一帧");
-          }
-          break;
+      case 'p':
+      case 'P':
+        if (current_frame_index_ > 0) {
+          // processFrame(current_frame_index_ - 1);
+          RCLCPP_INFO(this->get_logger(), "处理上一帧");
+        } else {
+          RCLCPP_WARN(this->get_logger(), "已是第一帧");
+        }
+        break;
 
-        case 'p':
-        case 'P':
-          if (current_frame_index_ > 0)
-          {
-            processFrame(current_frame_index_ - 1);
-          }
-          else
-          {
-            RCLCPP_WARN(this->get_logger(), "已是第一帧");
-          }
-          break;
+      case ' ':
+        auto_mode_ = !auto_mode_;
+        RCLCPP_INFO(this->get_logger(), "自动模式: %s",
+                    auto_mode_ ? "开启" : "关闭");
+        if (auto_mode_) {
+          // startAutoMode();
+        }
+        break;
 
-        case ' ':
-          auto_mode_ = !auto_mode_;
-          RCLCPP_INFO(this->get_logger(), "自动模式: %s", auto_mode_ ? "开启" : "关闭");
-          if (auto_mode_)
-          {
-            startAutoMode();
-          }
-          break;
+      case 'q':
+      case 'Q':
+        RCLCPP_INFO(this->get_logger(), "安全退出程序");
+        should_exit_ = true;
+        rclcpp::shutdown();
+        break;
 
-        case 'q':
-        case 'Q':
-          rclcpp::shutdown();
-          break;
-
-        default:
-          break;
+      default:
+        break;
       }
     }
   }
@@ -877,18 +1278,13 @@ private:
   /**
    * @brief Start automatic processing mode
    */
-  void startAutoMode()
-  {
+  void startAutoMode() {
     std::thread([this]() {
-      while (auto_mode_ && !should_exit_)
-      {
-        if (current_frame_index_ < frames_.size() - 1)
-        {
+      while (auto_mode_ && !should_exit_) {
+        if (current_frame_index_ < frames_.size() - 1) {
           processFrame(current_frame_index_ + 1);
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        else
-        {
+        } else {
           RCLCPP_INFO(this->get_logger(), "自动处理完成");
           auto_mode_ = false;
           break;
@@ -900,11 +1296,10 @@ private:
   /**
    * @brief Publish point cloud with current timestamp
    */
-  void publishPointCloud(const std::vector<Point>& points)
-  {
+  void publishPointCloud(const std::vector<Point> &points) {
     sensor_msgs::msg::PointCloud2 cloud_msg;
     cloud_msg.header.stamp = this->now();
-    cloud_msg.header.frame_id = "base_link";
+    cloud_msg.header.frame_id = "laser";
     cloud_msg.height = 1;
     cloud_msg.width = points.size();
 
@@ -934,9 +1329,8 @@ private:
     cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
     cloud_msg.data.resize(cloud_msg.row_step);
 
-    for (size_t i = 0; i < points.size(); ++i)
-    {
-      uint8_t* ptr = &cloud_msg.data[i * cloud_msg.point_step];
+    for (size_t i = 0; i < points.size(); ++i) {
+      uint8_t *ptr = &cloud_msg.data[i * cloud_msg.point_step];
 
       float x = static_cast<float>(points[i].x);
       std::memcpy(ptr + 0, &x, sizeof(float));
@@ -957,16 +1351,15 @@ private:
   /**
    * @brief Publish reflector markers with current timestamp
    */
-  void publishReflectorMarkers(const std::vector<DetectedReflector>& reflectors)
-  {
+  void
+  publishReflectorMarkers(const std::vector<DetectedReflector> &reflectors) {
     visualization_msgs::msg::MarkerArray marker_array;
     marker_array.markers.resize(reflectors.size());
 
-    for (size_t i = 0; i < reflectors.size(); ++i)
-    {
+    for (size_t i = 0; i < reflectors.size(); ++i) {
       visualization_msgs::msg::Marker marker;
       marker.header.stamp = this->now();
-      marker.header.frame_id = "base_link";
+      marker.header.frame_id = "laser";
       marker.ns = "reflective_posts";
       marker.id = i;
       marker.type = visualization_msgs::msg::Marker::CYLINDER;
@@ -998,16 +1391,14 @@ private:
   /**
    * @brief Publish trajectory
    */
-  void publishTrajectory()
-  {
-    const auto& trajectory = pose_tracker_.getTrajectory();
-    if (trajectory.empty())
-    {
+  void publishTrajectory() {
+    const auto &trajectory = pose_tracker_.getTrajectory();
+    if (trajectory.empty()) {
       return;
     }
 
     visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "map";
+    marker.header.frame_id = "odom";
     marker.header.stamp = this->now();
     marker.ns = "trajectory";
     marker.id = 0;
@@ -1015,8 +1406,7 @@ private:
     marker.action = visualization_msgs::msg::Marker::ADD;
 
     marker.points.resize(trajectory.size());
-    for (size_t i = 0; i < trajectory.size(); ++i)
-    {
+    for (size_t i = 0; i < trajectory.size(); ++i) {
       marker.points[i].x = trajectory[i].pose.position.x;
       marker.points[i].y = trajectory[i].pose.position.y;
       marker.points[i].z = 0.0;
@@ -1034,15 +1424,14 @@ private:
   /**
    * @brief Convert laser scan to points
    */
-  std::vector<Point> convertScanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg)
-  {
+  std::vector<Point>
+  convertScanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
     std::vector<Point> points;
 
-    for (size_t i = 0; i < scan_msg->ranges.size(); ++i)
-    {
-      if (scan_msg->ranges[i] < scan_msg->range_min || scan_msg->ranges[i] > scan_msg->range_max ||
-          !std::isfinite(scan_msg->ranges[i]))
-      {
+    for (size_t i = 0; i < scan_msg->ranges.size(); ++i) {
+      if (scan_msg->ranges[i] < scan_msg->range_min ||
+          scan_msg->ranges[i] > scan_msg->range_max ||
+          !std::isfinite(scan_msg->ranges[i])) {
         continue;
       }
 
@@ -1053,12 +1442,9 @@ private:
       point.x = range * std::cos(angle);
       point.y = range * std::sin(angle);
 
-      if (i < scan_msg->intensities.size())
-      {
+      if (i < scan_msg->intensities.size()) {
         point.intensity = scan_msg->intensities[i];
-      }
-      else
-      {
+      } else {
         point.intensity = 0.0;
       }
 
@@ -1071,15 +1457,13 @@ private:
   /**
    * @brief Filter points by intensity
    */
-  std::vector<Point> filterByIntensity(const std::vector<Point>& points, double threshold)
-  {
+  std::vector<Point> filterByIntensity(const std::vector<Point> &points,
+                                       double threshold) {
     std::vector<Point> filtered;
     filtered.reserve(points.size());
 
-    for (const auto& point : points)
-    {
-      if (point.intensity >= threshold)
-      {
+    for (const auto &point : points) {
+      if (point.intensity >= threshold) {
         filtered.push_back(point);
       }
     }
@@ -1090,17 +1474,14 @@ private:
   /**
    * @brief Compute centroid of cluster
    */
-  Point computeCentroid(const std::vector<Point>& cluster)
-  {
+  Point computeCentroid(const std::vector<Point> &cluster) {
     Point centroid;
-    if (cluster.empty())
-    {
+    if (cluster.empty()) {
       return centroid;
     }
 
     double sum_x = 0.0, sum_y = 0.0;
-    for (const auto& point : cluster)
-    {
+    for (const auto &point : cluster) {
       sum_x += point.x;
       sum_y += point.y;
     }
@@ -1120,6 +1501,12 @@ private:
   double diameter_tolerance_;
   bool enable_interpolation_;
   double min_confidence_;
+  // 激光与里程计相关数据
+  std::unordered_map<int64_t, sensor_msgs::msg::LaserScan::SharedPtr>
+      scan_map_; // Map of scan messages by timestamp
+  std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr> odom_map_;
+  std::vector<int64_t> odom_timestamps_; // Vector of frames
+  std::vector<int64_t> scan_timestamps_;
 
   // Frame data
   std::vector<std::shared_ptr<FrameData>> frames_;
@@ -1141,10 +1528,13 @@ private:
   GeometricValidator geometric_validator_;
 
   // Publishers
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr tracked_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
+      marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
+      tracked_marker_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cluster_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr compensated_cluster_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
+      compensated_cluster_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr trajectory_pub_;
 
@@ -1156,8 +1546,7 @@ private:
   std::atomic<bool> should_exit_;
 };
 
-int main(int argc, char** argv)
-{
+int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
 
   auto node = std::make_shared<ReflectorNoiseBagNode>();
