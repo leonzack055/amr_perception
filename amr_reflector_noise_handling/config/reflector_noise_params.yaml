@@ -59,14 +59,14 @@ reflector_noise_handling:
       gap_multiplier: 0.8     # 间隙倍数
     
     # 启用插值补偿（对稀疏点云进行插值）
-    enable_interpolation: true
+    enable_interpolation: false
     
     # === 阶段3: 圆拟合验证 ===
     circle_fit:
       # 最大拟合误差3cm
       max_fit_error: 0.03
       # 最小内点比例50%
-      min_inlier_ratio: 0.5
+      min_inlier_ratio: 0.4
       # 近距离最大误差4cm（<3m）
       max_fit_error_near: 0.04
       # 远距离最大误差2cm（>3m）
@@ -82,7 +82,7 @@ reflector_noise_handling:
     diameter_tolerance: 0.03
     
     # 最小置信度阈值
-    min_confidence: 0.5
+    min_confidence: 0.4
     
     # === 阶段4: 追踪系统 ===
     # 启用追踪系统（ID匹配和点云融合）

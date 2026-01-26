@@ -61,13 +61,14 @@ struct DetectedReflector {
     double confidence;                // Detection confidence (0-1)
     int point_count;                 // Number of points in cluster
     double mean_intensity;             // Mean intensity of points
+    int idx;                            // idx of cluster
     std::string rejection_reason;      // Reason if rejected
     
     DetectedReflector()
         : diameter(0.0)
         , confidence(0.0)
         , point_count(0)
-        , mean_intensity(0.0)
+        , mean_intensity(0.0),idx(-1)
     {}
 };
 

@@ -659,8 +659,7 @@ public:
       corrected_point.y = global_point.y();
       if (i < laser_frame->scan->intensities.size()) {
         corrected_point.intensity = laser_frame->scan->intensities[i];
-      }
-      else {
+      } else {
         corrected_point.intensity = 0.0;
       }
       corrected_points.push_back(corrected_point);
@@ -762,13 +761,19 @@ public:
     configureDetectionModules();
 
     // Create publisher for visualization
+    laser_pub_ =
+        this->create_publisher<sensor_msgs::msg::LaserScan>("/scan", 10);
     filtered_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         "/filtered_cloud", 10);
     cluster_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         "/reflector_cluster_cloud", 10);
+    // 近似反光柱形状插值补偿
     compensated_cluster_pub_ =
         this->create_publisher<sensor_msgs::msg::PointCloud2>(
             "/reflector_compensated_cluster_cloud", 10);
+    cluster_circle_points_pub_ =
+        this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "/reflector_cluster_circlefit_cloud", 10);
     trajectory_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
         "/reflector_bag_trajectory", 10);
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -820,8 +825,7 @@ public:
     RCLCPP_INFO(this->get_logger(), "加载完成，共 %zu 帧", frames_.size());
 
     // Start keyboard input thread
-    std::thread input_thread(&ReflectorNoiseBagNode::keyboardInputThread,
-    this);
+    std::thread input_thread(&ReflectorNoiseBagNode::keyboardInputThread, this);
 
     // Process first frame
     processFrame(0);
@@ -841,7 +845,7 @@ private:
    * @brief Configure detection modules
    */
   void configureDetectionModules() {
-    // Configure circle fitter
+    // Configure circle fittercircle_fitter_
     CircleFitParams circle_params;
     circle_params.max_fit_error = 0.03;
     circle_params.min_inlier_ratio = 0.5;
@@ -1058,9 +1062,9 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "处理帧 %zu/%zu, 时间: %.3f", frame_index,
                 frames_.size() - 1, rclcpp::Time(frame->timestamp).seconds());
-
-    frame->compensated_points =
-        DistortionCorrector::correctDistortion(frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
+    // 使用扭曲补偿
+    frame->compensated_points = DistortionCorrector::correctDistortion(
+        frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
     // Update global pose tracker
     // if (frame->odom) {
     //   pose_tracker_.update(frame->odom);
@@ -1086,17 +1090,19 @@ private:
     RCLCPP_INFO(this->get_logger(), "原始点数: %zu, 强度过滤后: %zu",
                 frame->compensated_points.size(), filtered_points.size());
 
+    frame->filtered_points = filtered_points;
+
     // DBSCAN clustering
     auto cluster_indices = fixed_dbscan_.cluster(filtered_points);
 
     if (cluster_indices.empty()) {
-      RCLCPP_DEBUG(this->get_logger(), "DBSCAN聚类后无簇");
+      RCLCPP_WARN(this->get_logger(), "DBSCAN聚类后无簇");
       frame->reflectors.clear();
       return;
     }
 
-    RCLCPP_DEBUG(this->get_logger(), "DBSCAN聚类得到 %zu 个簇",
-                 cluster_indices.size());
+    RCLCPP_INFO(this->get_logger(), "DBSCAN聚类得到 %zu 个簇",
+                cluster_indices.size());
 
     // Convert indices to clusters
     std::vector<std::vector<Point>> clusters;
@@ -1124,6 +1130,7 @@ private:
   void detectReflectors(const std::vector<std::vector<Point>> &clusters,
                         std::vector<DetectedReflector> &reflectors) {
     reflectors.clear();
+    cluster_circle_points_.clear();
 
     for (size_t idx = 0; idx < clusters.size(); ++idx) {
       const auto &cluster = clusters[idx];
@@ -1142,11 +1149,12 @@ private:
 
         is_reflector_candidate = (object_type == REFLECTOR_POST);
 
-        RCLCPP_DEBUG(this->get_logger(),
-                     "簇 %zu: 延伸度=%.2f, 线性度=%.2f, 圆形度=%.2f, 类型=%s",
-                     idx, pca_features.elongation, pca_features.linearity,
-                     pca_features.circularity,
-                     is_reflector_candidate ? "反光柱" : "其他");
+        RCLCPP_INFO(this->get_logger(),
+                    "簇 %zu: 延伸度=%.3f, 线性度=%.3f, 圆形度=%.3f, "
+                    "聚类点数=%zu, 中心距离=%.3f, 类型=%s",
+                    idx, pca_features.elongation, pca_features.linearity,
+                    pca_features.circularity, cluster.size(), distance,
+                    is_reflector_candidate ? "反光柱" : "其他");
       }
 
       if (!is_reflector_candidate) {
@@ -1158,12 +1166,16 @@ private:
       if (enable_interpolation_) {
         processed_cluster = improved_interpolator_.interpolateCluster(
             cluster, center, distance);
+        for (const auto &point : processed_cluster) {
+          cluster_circle_points_.push_back(point);
+        }
       }
 
       // Circle fitting
       auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
 
       if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
+        RCLCPP_INFO(this->get_logger(), "簇 %zu: 圆拟合失败", idx);
         continue;
       }
 
@@ -1176,13 +1188,16 @@ private:
         reflector.diameter = 2 * circle_fit.radius;
         reflector.confidence = confidence;
         reflector.point_count = cluster.size();
-
+        reflector.idx = idx;
         reflectors.push_back(reflector);
 
         RCLCPP_INFO(this->get_logger(),
                     "反光柱 %zu: 中心(%.3f,%.3f), 直径=%.3fm, 置信度=%.3f",
                     reflectors.size(), reflector.center.x, reflector.center.y,
                     reflector.diameter, confidence);
+      } else {
+        RCLCPP_INFO(this->get_logger(), "簇 %zu: 拟合置信度太低，判定失败",
+                    idx);
       }
     }
   }
@@ -1209,8 +1224,16 @@ private:
 
     const auto &frame = frames_[current_frame_index_];
 
+    pulishOriginLaserScan(frame->scan);
+
     // Publish point cloud with current timestamp
     publishPointCloud(frame->compensated_points);
+
+    // 发布阈值滤波后的点云
+    publishFilteredPointCloud(frame->filtered_points);
+
+    // 发布进行圆形拟合后的点云
+    publishClusterCircleFitPointCloud(this->cluster_circle_points_);
 
     // Publish reflector markers with current timestamp
     publishReflectorMarkers(frame->reflectors);
@@ -1236,8 +1259,7 @@ private:
       case 'n':
       case 'N':
         if (current_frame_index_ < frames_.size() - 1) {
-          // processFrame(current_frame_index_ + 1);
-          RCLCPP_INFO(this->get_logger(), "处理下一帧");
+          processFrame(current_frame_index_ + 1);
         } else {
           RCLCPP_WARN(this->get_logger(), "已是最后一帧");
         }
@@ -1246,8 +1268,7 @@ private:
       case 'p':
       case 'P':
         if (current_frame_index_ > 0) {
-          // processFrame(current_frame_index_ - 1);
-          RCLCPP_INFO(this->get_logger(), "处理上一帧");
+          processFrame(current_frame_index_ - 1);
         } else {
           RCLCPP_WARN(this->get_logger(), "已是第一帧");
         }
@@ -1293,6 +1314,11 @@ private:
     }).detach();
   }
 
+  void
+  pulishOriginLaserScan(const sensor_msgs::msg::LaserScan::Ptr &laser_msg) {
+    laser_msg->header.stamp = this->now();
+    laser_pub_->publish(*laser_msg);
+  }
   /**
    * @brief Publish point cloud with current timestamp
    */
@@ -1348,41 +1374,177 @@ private:
     cluster_pub_->publish(cloud_msg);
   }
 
+  void publishFilteredPointCloud(const std::vector<Point> &points) {
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    cloud_msg.header.stamp = this->now();
+    cloud_msg.header.frame_id = "laser";
+    cloud_msg.height = 1;
+    cloud_msg.width = points.size();
+
+    cloud_msg.fields.resize(4);
+    cloud_msg.fields[0].name = "x";
+    cloud_msg.fields[0].offset = 0;
+    cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[0].count = 1;
+
+    cloud_msg.fields[1].name = "y";
+    cloud_msg.fields[1].offset = 4;
+    cloud_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[1].count = 1;
+
+    cloud_msg.fields[2].name = "z";
+    cloud_msg.fields[2].offset = 8;
+    cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[2].count = 1;
+
+    cloud_msg.fields[3].name = "intensity";
+    cloud_msg.fields[3].offset = 12;
+    cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[3].count = 1;
+
+    cloud_msg.is_bigendian = false;
+    cloud_msg.point_step = 16;
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
+    cloud_msg.data.resize(cloud_msg.row_step);
+
+    for (size_t i = 0; i < points.size(); ++i) {
+      uint8_t *ptr = &cloud_msg.data[i * cloud_msg.point_step];
+
+      float x = static_cast<float>(points[i].x);
+      std::memcpy(ptr + 0, &x, sizeof(float));
+
+      float y = static_cast<float>(points[i].y);
+      std::memcpy(ptr + 4, &y, sizeof(float));
+
+      float z = 0.0f;
+      std::memcpy(ptr + 8, &z, sizeof(float));
+
+      float intensity = static_cast<float>(points[i].intensity);
+      std::memcpy(ptr + 12, &intensity, sizeof(float));
+    }
+
+    filtered_pub_->publish(cloud_msg);
+  }
+
+  void publishClusterCircleFitPointCloud(const std::vector<Point> &points) {
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    cloud_msg.header.stamp = this->now();
+    cloud_msg.header.frame_id = "laser";
+    cloud_msg.height = 1;
+    cloud_msg.width = points.size();
+
+    cloud_msg.fields.resize(4);
+    cloud_msg.fields[0].name = "x";
+    cloud_msg.fields[0].offset = 0;
+    cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[0].count = 1;
+
+    cloud_msg.fields[1].name = "y";
+    cloud_msg.fields[1].offset = 4;
+    cloud_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[1].count = 1;
+
+    cloud_msg.fields[2].name = "z";
+    cloud_msg.fields[2].offset = 8;
+    cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[2].count = 1;
+
+    cloud_msg.fields[3].name = "intensity";
+    cloud_msg.fields[3].offset = 12;
+    cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[3].count = 1;
+
+    cloud_msg.is_bigendian = false;
+    cloud_msg.point_step = 16;
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
+    cloud_msg.data.resize(cloud_msg.row_step);
+
+    for (size_t i = 0; i < points.size(); ++i) {
+      uint8_t *ptr = &cloud_msg.data[i * cloud_msg.point_step];
+
+      float x = static_cast<float>(points[i].x);
+      std::memcpy(ptr + 0, &x, sizeof(float));
+
+      float y = static_cast<float>(points[i].y);
+      std::memcpy(ptr + 4, &y, sizeof(float));
+
+      float z = 0.0f;
+      std::memcpy(ptr + 8, &z, sizeof(float));
+
+      float intensity = static_cast<float>(points[i].intensity);
+      std::memcpy(ptr + 12, &intensity, sizeof(float));
+    }
+
+    cluster_circle_points_pub_->publish(cloud_msg);
+  }
+
   /**
    * @brief Publish reflector markers with current timestamp
    */
   void
   publishReflectorMarkers(const std::vector<DetectedReflector> &reflectors) {
     visualization_msgs::msg::MarkerArray marker_array;
-    marker_array.markers.resize(reflectors.size());
+    // Resize to accommodate both cylinder markers and text labels
+    marker_array.markers.resize(reflectors.size() * 2);
 
     for (size_t i = 0; i < reflectors.size(); ++i) {
-      visualization_msgs::msg::Marker marker;
-      marker.header.stamp = this->now();
-      marker.header.frame_id = "laser";
-      marker.ns = "reflective_posts";
-      marker.id = i;
-      marker.type = visualization_msgs::msg::Marker::CYLINDER;
-      marker.action = visualization_msgs::msg::Marker::ADD;
+      // Create cylinder marker for the reflector
+      visualization_msgs::msg::Marker cylinder_marker;
+      cylinder_marker.header.stamp = this->now();
+      cylinder_marker.header.frame_id = "laser";
+      cylinder_marker.ns = "reflective_posts";
+      cylinder_marker.id = i * 2; // Even IDs for cylinders
+      cylinder_marker.type = visualization_msgs::msg::Marker::CYLINDER;
+      cylinder_marker.action = visualization_msgs::msg::Marker::ADD;
 
-      marker.pose.position.x = reflectors[i].center.x;
-      marker.pose.position.y = reflectors[i].center.y;
-      marker.pose.position.z = 0.0;
-      marker.pose.orientation.w = 1.0;
+      cylinder_marker.pose.position.x = reflectors[i].center.x;
+      cylinder_marker.pose.position.y = reflectors[i].center.y;
+      cylinder_marker.pose.position.z = 0.0;
+      cylinder_marker.pose.orientation.w = 1.0;
 
-      marker.scale.x = reflectors[i].diameter;
-      marker.scale.y = reflectors[i].diameter;
-      marker.scale.z = 0.5;
+      // marker.scale.x = reflectors[i].diameter;
+      // marker.scale.y = reflectors[i].diameter;
+      cylinder_marker.scale.x = 0.1;
+      cylinder_marker.scale.y = 0.1;
+      cylinder_marker.scale.z = 0.5;
 
       double confidence = reflectors[i].confidence;
-      marker.color.r = 0.0;
-      marker.color.g = confidence;
-      marker.color.b = 1.0 - confidence;
-      marker.color.a = 0.8;
+      cylinder_marker.color.r = 0.0;
+      cylinder_marker.color.g = confidence;
+      cylinder_marker.color.b = 1.0 - confidence;
+      cylinder_marker.color.a = 0.8;
 
-      marker.lifetime = rclcpp::Duration::from_seconds(0.2);
+      cylinder_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
 
-      marker_array.markers[i] = marker;
+      marker_array.markers[i * 2] = cylinder_marker;
+
+      // Create text label marker for the reflector idx
+      visualization_msgs::msg::Marker text_marker;
+      text_marker.header.stamp = this->now();
+      text_marker.header.frame_id = "laser";
+      text_marker.ns = "reflective_posts";
+      text_marker.id = i * 2 + 1; // Odd IDs for text labels
+      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text_marker.action = visualization_msgs::msg::Marker::ADD;
+
+      text_marker.pose.position.x = reflectors[i].center.x;
+      text_marker.pose.position.y = reflectors[i].center.y;
+      text_marker.pose.position.z = 0.6; // Position text above the cylinder
+      text_marker.pose.orientation.w = 1.0;
+
+      text_marker.scale.z = 0.3; // Text height
+
+      text_marker.color.r = 1.0;
+      text_marker.color.g = 1.0;
+      text_marker.color.b = 0.0;
+      text_marker.color.a = 1.0;
+
+      // Set text to display the reflector idx
+      text_marker.text = "R" + std::to_string(reflectors[i].idx);
+
+      text_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
+
+      marker_array.markers[i * 2 + 1] = text_marker;
     }
 
     marker_pub_->publish(marker_array);
@@ -1523,6 +1685,7 @@ private:
   FractalDimensionCalculator fd_calculator_;
   PCAShapeClassifier pca_classifier_;
   ImprovedInterpolationCompensator improved_interpolator_;
+  std::vector<Point> cluster_circle_points_;
   CircleFitter circle_fitter_;
   PracticalDescriptorExtractor descriptor_extractor_;
   GeometricValidator geometric_validator_;
@@ -1532,9 +1695,12 @@ private:
       marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
       tracked_marker_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr laser_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cluster_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
       compensated_cluster_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
+      cluster_circle_points_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr trajectory_pub_;
 
