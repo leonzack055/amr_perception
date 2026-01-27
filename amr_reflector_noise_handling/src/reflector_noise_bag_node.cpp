@@ -1096,7 +1096,8 @@ private:
     frame->filtered_points = filtered_points;
 
     // DBSCAN clustering
-    // TODO: 在Point中加入OrignIndex然后利用这个索引进行回溯, cluster中点云以originIndex进行排序;
+    // TODO: 在Point中加入OrignIndex然后利用这个索引进行回溯,
+    // cluster中点云以originIndex进行排序;
     auto cluster_indices = fixed_dbscan_.cluster(filtered_points);
 
     if (cluster_indices.empty()) {
@@ -1127,8 +1128,8 @@ private:
     }
 
     // Detect reflectors
-    // TODO: 修复圆拟合检测性问题，连续性插值检测; 局部非凹性检测; 1.2m内有大噪声;
-    // 保存： 当前帧pcd点云;
+    // TODO: 修复圆拟合检测性问题，连续性插值检测;
+    // 局部非凹性检测; 1.2m内有大噪声; 保存： 当前帧pcd点云;
     detectReflectors(clusters, frame->reflectors);
 
     RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
@@ -1140,16 +1141,18 @@ private:
    * @brief
    * 利用聚类的索引序列，判断聚类的连续性，如果中间有断开，则认为是两个聚类
    */
-  std::vector<std::vector<int>> continueClusterDetector(
-    const std::vector<Point>& filtered_points,
-      const std::vector<std::vector<int>> &cluster_indices, int gap_threshold) {
+  std::vector<std::vector<int>>
+  continueClusterDetector(const std::vector<Point> &filtered_points,
+                          const std::vector<std::vector<int>> &cluster_indices,
+                          int gap_threshold) {
     std::vector<std::vector<int>> new_cluster_indices;
     int cluster_idx = 0;
     for (const auto &indices : cluster_indices) {
       std::vector<int> new_cluster;
       for (std::vector<int>::const_iterator iter = indices.begin();
            iter < indices.end() - 1; ++iter) {
-        int index_gap = filtered_points[* (iter + 1)].origin_index - filtered_points[*iter].origin_index;
+        int index_gap = filtered_points[*(iter + 1)].origin_index -
+                        filtered_points[*iter].origin_index;
         // gap设置为3 超过3个重新打断分类
         if (index_gap > gap_threshold) {
           std::vector<int> new_split_cluster(new_cluster);
@@ -1160,7 +1163,7 @@ private:
         }
         new_cluster.push_back(*iter);
       }
-      if(new_cluster.size() > 8) {
+      if (new_cluster.size() > 8) {
         new_cluster_indices.push_back(new_cluster);
       }
       cluster_idx++;
@@ -1208,7 +1211,7 @@ private:
       }
 
       // Interpolation
-      // 插值补偿距离较远的稀疏点云，进行弧长插补
+      // 插值补偿距离较远的稀疏点云，进行弧长插补(Depatched)
       auto processed_cluster = cluster;
       if (enable_interpolation_) {
         processed_cluster = improved_interpolator_.interpolateCluster(
@@ -1219,33 +1222,58 @@ private:
       }
 
       // 圆拟合基本失败,修正圆拟合方法
-      auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
+      // auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
+      auto circle_fit = circle_fitter_.fitArcWithRANSAC(processed_cluster);
 
-      if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
-        RCLCPP_INFO(this->get_logger(), "簇 %zu: 圆拟合失败", idx);
+      // if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance))
+      // {
+      //   RCLCPP_INFO(this->get_logger(), "簇 %zu: 圆拟合失败", idx);
+      //   continue;
+      // }
+      if (!circle_fit.is_valid) {
+        RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合失败", idx);
         continue;
       }
-
-      // Compute confidence
-      double confidence = computeConfidence(cluster, circle_fit);
-
-      if (confidence >= min_confidence_) {
+      RCLCPP_INFO(this->get_logger(),
+                  "簇 %zu : 中心(%.3f,%.3f), 直径=%.3fm, 误差=%.3f, "
+                  "内点数=%d, 内点比例=%.3f, 总点数=%d",
+                  idx, circle_fit.center.x, circle_fit.center.y,
+                  circle_fit.radius * 2.0,
+                  circle_fit.fit_error, circle_fit.inlier_count,
+                  circle_fit.inlier_ratio, circle_fit.total_points);
+      if (circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
         DetectedReflector reflector;
         reflector.center = circle_fit.center;
         reflector.diameter = 2 * circle_fit.radius;
-        reflector.confidence = confidence;
+        reflector.confidence = 0.8;
         reflector.point_count = cluster.size();
         reflector.idx = idx;
         reflectors.push_back(reflector);
-
-        RCLCPP_INFO(this->get_logger(),
-                    "反光柱 %zu: 中心(%.3f,%.3f), 直径=%.3fm, 置信度=%.3f",
-                    reflectors.size(), reflector.center.x, reflector.center.y,
-                    reflector.diameter, confidence);
       } else {
-        RCLCPP_INFO(this->get_logger(), "簇 %zu: 拟合置信度太低，判定失败",
-                    idx);
+        RCLCPP_WARN(this->get_logger(),
+                    "簇 %zu: RANSAC圆拟合圆拟合 内点误差验证失败", idx);
       }
+
+      // Compute confidence
+      // double confidence = computeConfidence(cluster, circle_fit);
+
+      // if (confidence >= min_confidence_) {
+      //   DetectedReflector reflector;
+      //   reflector.center = circle_fit.center;
+      //   reflector.diameter = 2 * circle_fit.radius;
+      //   reflector.confidence = confidence;
+      //   reflector.point_count = cluster.size();
+      //   reflector.idx = idx;
+      //   reflectors.push_back(reflector);
+
+      //   RCLCPP_INFO(this->get_logger(),
+      //               "反光柱 %zu: 中心(%.3f,%.3f), 直径=%.3fm, 置信度=%.3f",
+      //               reflectors.size(), reflector.center.x,
+      //               reflector.center.y, reflector.diameter, confidence);
+      // } else {
+      //   RCLCPP_INFO(this->get_logger(), "簇 %zu: 拟合置信度太低，判定失败",
+      //               idx);
+      // }
     }
   }
 
@@ -1283,7 +1311,9 @@ private:
     publishClusterCircleFitPointCloud(this->cluster_circle_points_);
 
     // Publish reflector markers with current timestamp
+    // 新增可视化拟合圆
     publishReflectorMarkers(frame->reflectors);
+
 
     // Publish trajectory with current timestamp
     publishTrajectory();
@@ -1532,7 +1562,7 @@ private:
   publishReflectorMarkers(const std::vector<DetectedReflector> &reflectors) {
     visualization_msgs::msg::MarkerArray marker_array;
     // Resize to accommodate both cylinder markers and text labels
-    marker_array.markers.resize(reflectors.size() * 2);
+    marker_array.markers.resize(reflectors.size() * 3);
 
     for (size_t i = 0; i < reflectors.size(); ++i) {
       // Create cylinder marker for the reflector
@@ -1540,7 +1570,7 @@ private:
       cylinder_marker.header.stamp = this->now();
       cylinder_marker.header.frame_id = "laser";
       cylinder_marker.ns = "reflective_posts";
-      cylinder_marker.id = i * 2; // Even IDs for cylinders
+      cylinder_marker.id = i * 3; // Even IDs for cylinders
       cylinder_marker.type = visualization_msgs::msg::Marker::CYLINDER;
       cylinder_marker.action = visualization_msgs::msg::Marker::ADD;
 
@@ -1563,14 +1593,42 @@ private:
 
       cylinder_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
 
-      marker_array.markers[i * 2] = cylinder_marker;
+      marker_array.markers[i * 3] = cylinder_marker;
+
+      // 创建检测出来的拟合圆
+      visualization_msgs::msg::Marker cylinder_marker2;
+      cylinder_marker2.header.stamp = this->now();
+      cylinder_marker2.header.frame_id = "laser";
+      cylinder_marker2.ns = "reflective_posts";
+      cylinder_marker2.id = i * 3 + 1; // Even IDs for cylinders
+      cylinder_marker2.type = visualization_msgs::msg::Marker::CYLINDER;
+      cylinder_marker2.action = visualization_msgs::msg::Marker::ADD;
+
+      cylinder_marker2.pose.position.x = reflectors[i].center.x;
+      cylinder_marker2.pose.position.y = reflectors[i].center.y;
+      cylinder_marker2.pose.position.z = 0.0;
+      cylinder_marker2.pose.orientation.w = 1.0;
+
+      // marker.scale.x = reflectors[i].diameter;
+      // marker.scale.y = reflectors[i].diameter;
+      cylinder_marker2.scale.x = reflectors[i].diameter;
+      cylinder_marker2.scale.y = reflectors[i].diameter;
+      cylinder_marker2.scale.z = 0.5;
+
+      cylinder_marker2.color.r = 1.0;
+      cylinder_marker2.color.g = 0.0;
+      cylinder_marker2.color.b = 1.0;
+      cylinder_marker2.color.a = 0.8;
+
+      cylinder_marker2.lifetime = rclcpp::Duration::from_seconds(0.2);
+      marker_array.markers[i * 3 + 1] = cylinder_marker2;
 
       // Create text label marker for the reflector idx
       visualization_msgs::msg::Marker text_marker;
       text_marker.header.stamp = this->now();
       text_marker.header.frame_id = "laser";
       text_marker.ns = "reflective_posts";
-      text_marker.id = i * 2 + 1; // Odd IDs for text labels
+      text_marker.id = i * 3 + 2; // Odd IDs for text labels
       text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
       text_marker.action = visualization_msgs::msg::Marker::ADD;
 
@@ -1591,7 +1649,7 @@ private:
 
       text_marker.lifetime = rclcpp::Duration::from_seconds(0.2);
 
-      marker_array.markers[i * 2 + 1] = text_marker;
+      marker_array.markers[i * 3 + 2] = text_marker;
     }
 
     marker_pub_->publish(marker_array);

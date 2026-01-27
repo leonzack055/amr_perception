@@ -40,7 +40,7 @@ struct ConvexityMetrics {
  */
 struct CircleFitParams {
     double max_fit_error = 0.03;          // 最大拟合误差3cm
-    double min_inlier_ratio = 0.5;        // 最小内点比例50%
+    double min_inlier_ratio = 0.4;        // 最小内点比例50%
     double max_fit_error_near = 0.04;      // 近距离最大误差4cm
     double max_fit_error_far = 0.02;       // 远距离最大误差2cm
     double far_distance_threshold = 3.0;   // 远距离阈值3m
@@ -56,7 +56,7 @@ struct CircleFitParams {
     
     // RANSAC参数
     int ransac_iterations = 100;          // RANSAC迭代次数
-    double ransac_inlier_threshold = 0.02; // RANSAC内点阈值
+    double ransac_inlier_threshold = 0.002; // RANSAC内点阈值
 };
 
 /**
@@ -85,7 +85,7 @@ public:
      * @brief 鲁棒圆弧拟合（主入口）
      * 
      * 结合凸性检测、RANSAC拟合和改进验证
-     * 
+     *  此处凸包计算存在问题，
      * @param points 点云
      * @param distance 距离（用于自适应阈值）
      * @return CircleFitResult 拟合结果
@@ -139,7 +139,7 @@ public:
     
     /**
      * @brief 计算凸性指标
-     * 
+     * WARN: 凸包计算过程中存在问题，应该以points中索引顺序进行凸包计算; 角度跨度应该以拟合圆中心计算
      * @param points 点云
      * @return ConvexityMetrics 凸性指标
      */
@@ -427,7 +427,7 @@ public:
         
         // 3. 内点比例（考虑插值点）
         // 插值后点数约1.5倍原始点数
-        double expected_points = original_point_count * 1.5;
+        double expected_points = original_point_count * 0.8;
         double expected_inlier_ratio = params_.min_inlier_ratio;
         
         double actual_inlier_ratio = static_cast<double>(fit.inlier_count) / expected_points;
