@@ -622,6 +622,7 @@ public:
         odom_spline.interpolate(laser_frame->timestamp * 1e-9);
     laser_frame->global_pose = global_base_pose.pose * laser_to_base;
     // 5. 计算每个点在短时里程计下的全局坐标
+    int index = 0;
     for (size_t i = 0; i < laser_frame->scan->ranges.size(); ++i) {
       // 跳过无效点
       if (laser_frame->scan->ranges[i] < laser_frame->scan->range_min ||
@@ -662,6 +663,7 @@ public:
       } else {
         corrected_point.intensity = 0.0;
       }
+      corrected_point.origin_index = index++;
       corrected_points.push_back(corrected_point);
     }
     return corrected_points;
@@ -1065,6 +1067,7 @@ private:
     // 使用扭曲补偿
     frame->compensated_points = DistortionCorrector::correctDistortion(
         frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
+
     // Update global pose tracker
     // if (frame->odom) {
     //   pose_tracker_.update(frame->odom);
@@ -1093,6 +1096,7 @@ private:
     frame->filtered_points = filtered_points;
 
     // DBSCAN clustering
+    // TODO: 在Point中加入OrignIndex然后利用这个索引进行回溯, cluster中点云以originIndex进行排序;
     auto cluster_indices = fixed_dbscan_.cluster(filtered_points);
 
     if (cluster_indices.empty()) {
@@ -1103,25 +1107,65 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "DBSCAN聚类得到 %zu 个簇",
                 cluster_indices.size());
-
+    // 连续性过滤,同样以 Point点云以 OriginIndex进行索引排序
+    auto splited_clusters =
+        continueClusterDetector(filtered_points, cluster_indices, 3);
+    RCLCPP_INFO(this->get_logger(), "DBSCAN连续性分割后,得到 %zu 个簇",
+                splited_clusters.size());
     // Convert indices to clusters
     std::vector<std::vector<Point>> clusters;
-    for (const auto &indices : cluster_indices) {
+    int cluster_idx = 0;
+    for (const auto &indices : splited_clusters) {
       std::vector<Point> cluster;
       cluster.reserve(indices.size());
       for (int idx : indices) {
         cluster.push_back(filtered_points[idx]);
+        frame->filtered_points[idx].intensity = 2000 + cluster_idx * 200;
       }
       clusters.push_back(cluster);
+      cluster_idx++;
     }
 
     // Detect reflectors
+    // TODO: 修复圆拟合检测性问题，连续性插值检测; 局部非凹性检测; 1.2m内有大噪声;
+    // 保存： 当前帧pcd点云;
     detectReflectors(clusters, frame->reflectors);
 
     RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
                 frame->reflectors.size());
 
     // Visualization data is ready, will be published by timer
+  }
+  /**
+   * @brief
+   * 利用聚类的索引序列，判断聚类的连续性，如果中间有断开，则认为是两个聚类
+   */
+  std::vector<std::vector<int>> continueClusterDetector(
+    const std::vector<Point>& filtered_points,
+      const std::vector<std::vector<int>> &cluster_indices, int gap_threshold) {
+    std::vector<std::vector<int>> new_cluster_indices;
+    int cluster_idx = 0;
+    for (const auto &indices : cluster_indices) {
+      std::vector<int> new_cluster;
+      for (std::vector<int>::const_iterator iter = indices.begin();
+           iter < indices.end() - 1; ++iter) {
+        int index_gap = filtered_points[* (iter + 1)].origin_index - filtered_points[*iter].origin_index;
+        // gap设置为3 超过3个重新打断分类
+        if (index_gap > gap_threshold) {
+          std::vector<int> new_split_cluster(new_cluster);
+          if (new_split_cluster.size() > 8) {
+            new_cluster_indices.push_back(new_split_cluster);
+          }
+          new_cluster.clear();
+        }
+        new_cluster.push_back(*iter);
+      }
+      if(new_cluster.size() > 8) {
+        new_cluster_indices.push_back(new_cluster);
+      }
+      cluster_idx++;
+    }
+    return new_cluster_indices;
   }
 
   /**
@@ -1144,6 +1188,8 @@ private:
         auto pca_features =
             pca_classifier_.computeShapeFeatures(cluster, circle_fitter_);
         auto circle_fit_temp = circle_fitter_.fitCircle(cluster);
+        // 分别根据pca信息和拟合圆信息判别是直线，还是圆弧，以及噪声
+        // 噪声检测基本失败
         auto object_type =
             pca_classifier_.classifyObject(pca_features, circle_fit_temp);
 
@@ -1162,6 +1208,7 @@ private:
       }
 
       // Interpolation
+      // 插值补偿距离较远的稀疏点云，进行弧长插补
       auto processed_cluster = cluster;
       if (enable_interpolation_) {
         processed_cluster = improved_interpolator_.interpolateCluster(
@@ -1171,7 +1218,7 @@ private:
         }
       }
 
-      // Circle fitting
+      // 圆拟合基本失败,修正圆拟合方法
       auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
 
       if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {

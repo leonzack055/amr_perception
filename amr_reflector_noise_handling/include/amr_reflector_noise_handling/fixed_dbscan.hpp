@@ -19,7 +19,7 @@ public:
      * @brief Constructor with fixed parameters
      */
     FixedDBSCAN()
-        : eps_(0.10)      // 10cm clustering radius
+        : eps_(0.05)      // 10cm clustering radius
         , min_points_(5)    // Minimum 5 points for a cluster
         , visited_(nullptr)
         , cluster_id_(nullptr)
@@ -60,6 +60,12 @@ public:
             if (cluster_id_[i] >= 0) {
                 clusters[cluster_id_[i]].push_back(i);
             }
+        }
+        // 以点云升序排序
+        for (auto& cluster : clusters) {
+            std::sort(cluster.begin(), cluster.end(), [&](int a, int b) {
+                return points[a].origin_index < points[b].origin_index;
+            });
         }
         
         // Sort clusters by size (largest first)

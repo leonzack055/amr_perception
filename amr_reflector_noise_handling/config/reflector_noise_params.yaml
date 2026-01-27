@@ -36,11 +36,11 @@ reflector_noise_handling:
     pca_classification:
       enable: true
       # 延伸度阈值 - 反光柱应该接近圆形，延伸度应该较小
-      max_elongation_post: 9.50
+      max_elongation_post: 8.50
       # 延伸度阈值 - 反光板应该有较大的延伸度
-      min_elongation_board: 12.0
+      min_elongation_board: 10.0
       # 线性度阈值 - 反光柱应该有较低的线性度
-      max_linearity_post: 0.978
+      max_linearity_post: 0.97
       # 线性度阈值 - 反光板应该有较高的线性度
       min_linearity_board: 0.94
       # 圆形度阈值 - 反光柱应该有较高的圆形度

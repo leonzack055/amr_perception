@@ -15,6 +15,7 @@ namespace amr_reflector_noise_handling {
 struct Point {
     double x, y;       // Position coordinates (m)
     double intensity;     // Intensity value (0-1 after normalization)
+    int origin_index; // LaserScan的原始索引
     
     Point() : x(0), y(0), intensity(0) {}
     Point(double x_, double y_, double i = 0) : x(x_), y(y_), intensity(i) {}
