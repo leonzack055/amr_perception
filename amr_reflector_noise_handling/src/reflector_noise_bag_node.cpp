@@ -869,8 +869,8 @@ private:
     ShapeClassificationParams pca_params;
     pca_params.max_elongation_for_post = 9.50;
     pca_params.min_elongation_for_board = 12.0;
-    pca_params.min_linearity_for_board = 0.94;
-    pca_params.max_linearity_for_post = 0.978;
+    pca_params.min_linearity_for_board = 0.93;
+    pca_params.max_linearity_for_post = 0.97;
     pca_params.min_circularity_for_post = 0.64;
     pca_params.min_circularity_for_board = 0.46;
     pca_classifier_.setParams(pca_params);
@@ -1219,6 +1219,9 @@ private:
         for (const auto &point : processed_cluster) {
           cluster_circle_points_.push_back(point);
         }
+        RCLCPP_INFO(this->get_logger(),
+                    "进行插值补偿， 补偿前总点数: %zu, 补偿后总点数: %zu",
+                    cluster.size(), processed_cluster.size());
       }
 
       // 圆拟合基本失败,修正圆拟合方法
@@ -1234,13 +1237,14 @@ private:
         RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合失败", idx);
         continue;
       }
-      RCLCPP_INFO(this->get_logger(),
-                  "簇 %zu : 中心(%.3f,%.3f), 直径=%.3fm, 误差=%.3f, "
-                  "内点数=%d, 内点比例=%.3f, 总点数=%d",
-                  idx, circle_fit.center.x, circle_fit.center.y,
-                  circle_fit.radius * 2.0,
-                  circle_fit.fit_error, circle_fit.inlier_count,
-                  circle_fit.inlier_ratio, circle_fit.total_points);
+      RCLCPP_INFO(
+          this->get_logger(),
+          "簇 %zu : 中心(%.3f,%.3f), 直径=%.3fm, 总误差=%.6f, "
+          "内点数=%d, 内点比例=%.3f, 总点数=%d, 内点误差=%6f, 外点误差=%6f",
+          idx, circle_fit.center.x, circle_fit.center.y,
+          circle_fit.radius * 2.0, circle_fit.fit_error,
+          circle_fit.inlier_count, circle_fit.inlier_ratio,
+          circle_fit.total_points, circle_fit.inner_error, circle_fit.outline_error);
       if (circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
         DetectedReflector reflector;
         reflector.center = circle_fit.center;
@@ -1313,7 +1317,6 @@ private:
     // Publish reflector markers with current timestamp
     // 新增可视化拟合圆
     publishReflectorMarkers(frame->reflectors);
-
 
     // Publish trajectory with current timestamp
     publishTrajectory();
@@ -1581,8 +1584,8 @@ private:
 
       // marker.scale.x = reflectors[i].diameter;
       // marker.scale.y = reflectors[i].diameter;
-      cylinder_marker.scale.x = 0.1;
-      cylinder_marker.scale.y = 0.1;
+      cylinder_marker.scale.x = 0.001;
+      cylinder_marker.scale.y = 0.001;
       cylinder_marker.scale.z = 0.5;
 
       double confidence = reflectors[i].confidence;
