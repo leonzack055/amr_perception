@@ -742,7 +742,7 @@ public:
     this->declare_parameter("raw_intensity_threshold", 1000.0);
     this->declare_parameter("expected_diameter", 0.07);
     this->declare_parameter("diameter_tolerance", 0.03);
-    this->declare_parameter("enable_interpolation", true);
+    this->declare_parameter("enable_interpolation", false);
     this->declare_parameter("min_confidence", 0.5);
 
     // Get parameters
@@ -1237,14 +1237,20 @@ private:
         RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合失败", idx);
         continue;
       }
-      RCLCPP_INFO(
-          this->get_logger(),
-          "簇 %zu : 中心(%.3f,%.3f), 直径=%.3fm, 总误差=%.6f, "
-          "内点数=%d, 内点比例=%.3f, 总点数=%d, 内点误差=%6f, 外点误差=%6f",
-          idx, circle_fit.center.x, circle_fit.center.y,
-          circle_fit.radius * 2.0, circle_fit.fit_error,
-          circle_fit.inlier_count, circle_fit.inlier_ratio,
-          circle_fit.total_points, circle_fit.inner_error, circle_fit.outline_error);
+      RCLCPP_INFO(this->get_logger(),
+                  "簇 %zu : 中心(%.3f,%.3f), 直径=%.3fm, 总误差=%.6f, "
+                  "内点数=%d, 内点比例=%.3f, 总点数=%d, 内点误差=%6f, "
+                  "外点误差=%6f,  凹半圆检测比率=%4f, 凸半圆检测比率=%4f ",
+                  idx, circle_fit.center.x, circle_fit.center.y,
+                  circle_fit.radius * 2.0, circle_fit.fit_error,
+                  circle_fit.inlier_count, circle_fit.inlier_ratio,
+                  circle_fit.total_points, circle_fit.inner_error,
+                  circle_fit.outline_error, circle_fit.concave_ratio,
+                  circle_fit.convex_ratio);
+      if(circle_fit.concave_ratio > 0.2) {
+        RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合为凹型,判定失效", idx);
+        continue;
+      }
       if (circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
         DetectedReflector reflector;
         reflector.center = circle_fit.center;

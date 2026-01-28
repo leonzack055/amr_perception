@@ -22,6 +22,8 @@ struct CircleFitResult {
   int inlier_count;     // 内点数量
   int total_points;     // 总点数
   double inlier_ratio;  // 内点比例
+  double convex_ratio;  // 凸性指标
+  double concave_ratio; // 凹性指标
   bool is_valid;        // 是否有效
 };
 
@@ -275,6 +277,26 @@ public:
         best_result.fit_error = fit_error;
         best_result.is_valid = true;
       }
+    }
+    if (best_result.is_valid) {
+      // 计算半圆曲度方向；
+      int concave_count = 0;
+      int convex_count = 0;
+      for (const auto &p : points) {
+        double circle_x = p.x - best_result.center.x;
+        double circle_y = p.y - best_result.center.y;
+        double product =
+            best_result.center.x * circle_x + best_result.center.y * circle_y;
+        if (product > 0) {
+          concave_count++;
+        } else {
+          convex_count++;
+        }
+      }
+      best_result.concave_ratio = double(concave_count) / points.size();
+      best_result.convex_ratio = double(convex_count) / points.size();
+      std::cerr << "凹半圆检测比率=" << best_result.concave_ratio
+                << " 凸半圆检测比率=" << best_result.convex_ratio << std::endl;
     }
 
     return best_result;

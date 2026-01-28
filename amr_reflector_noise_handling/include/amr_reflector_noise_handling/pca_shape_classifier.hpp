@@ -162,7 +162,7 @@ public:
         features.linearity <= params_.max_linearity_for_post) {
       // 规则5： 近距离聚类数目要大于20个点且线性度要高 否则为噪声
       if(features.center.distanceFromOrigin() < 1.30) {
-        if(features.point_count < 20 || features.linearity > 0.87) {
+        if(features.point_count < 20 || features.linearity > 0.89) {
           return CLUSTER_NOISE;
         }
       }
