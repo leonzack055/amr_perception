@@ -57,6 +57,7 @@ add_executable(reflector_noise_bag_node
   src/reflector_noise_bag_node.cpp
   src/geometric_validator.cpp
   src/types/msg_conversion.cpp
+  src/global_reflector_tracker.cpp
 )
 
 target_include_directories(reflector_noise_bag_node PUBLIC

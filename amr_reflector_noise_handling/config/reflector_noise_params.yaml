@@ -93,3 +93,51 @@ reflector_noise_handling:
     
     # 匹配相似度阈值（0-1范围）
     match_threshold: 0.8
+    
+    # === 阶段5: 全局反光柱跟踪器 ===
+    # 全局位置跟踪，用于ID分配和误检测过滤
+    global_tracking:
+      # === 数据关联参数 ===
+      # 匹配距离阈值（已确认反光柱，米）
+      match_distance_threshold: 0.3
+      
+      # 匹配距离阈值（非活跃反光柱，米）- 更宽松以允许重新匹配
+      match_distance_inactive: 0.5
+      
+      # === 确认参数 ===
+      # 确认时间窗口（秒）- 在此时间窗口内需要达到最小检测次数
+      confirm_time_window: 1.0
+      
+      # 时间窗口内的最小检测次数
+      min_detections_in_window: 6
+      
+      # === 状态管理参数 ===
+      # 非活跃超时时间（秒）- 超过此时间未检测到，从CONFIRMED转为INACTIVE
+      inactive_timeout: 5.0
+      
+      # 最大非活跃时间（秒）- 超过此时间未检测到，删除tracker
+      max_inactive_time: 60.0
+      
+      # === 位置滤波参数 ===
+      # EMA位置滤波系数α (0.0-1.0) - 较小的值更平滑但响应慢
+      position_filter_alpha: 0.3
+      
+      # EMA方差估计系数β (0.0-1.0) - 用于位置不确定性估计
+      position_filter_beta: 0.2
+      
+      # 最小标准差（米）- 避免不确定性估计过小
+      min_std_dev: 0.02
+      
+      # 最大标准差（米）- 超过此值认为位置不确定度太高
+      max_std_dev: 0.5
+      
+      # === 置信度滤波参数 ===
+      # 最小置信度阈值 - 低于此值的检测不参与跟踪
+      min_confidence_to_track: 0.3
+      
+      # EMA置信度滤波系数 (0.0-1.0)
+      confidence_filter_alpha: 0.2
+      
+      # === 直径滤波参数 ===
+      # EMA直径滤波系数 (0.0-1.0)
+      diameter_filter_alpha: 0.3

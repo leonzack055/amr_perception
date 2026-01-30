@@ -26,6 +26,7 @@
 #include "amr_reflector_noise_handling/fixed_dbscan.hpp"
 #include "amr_reflector_noise_handling/fractal_dimension.hpp"
 #include "amr_reflector_noise_handling/geometric_validator.hpp"
+#include "amr_reflector_noise_handling/global_reflector_tracker.hpp"
 #include "amr_reflector_noise_handling/improved_interpolation.hpp"
 #include "amr_reflector_noise_handling/pca_shape_classifier.hpp"
 #include "amr_reflector_noise_handling/practical_descriptor.hpp"
@@ -463,8 +464,25 @@ public:
   void
   update(std::shared_ptr<FrameData> &laser_frame,
          const std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr>
-             &odom_queue) {
+             &odom_queue,
+         const transforms::Rigid3d &laser_to_base) {
     // TODO: 使用OdometryQueue进行LaserScan数据的CSplines拟合
+    // 1. 获取laser帧前后两个里程数据
+    std::vector<PosePoint> odom_poses(laser_frame->between_next_odoms.size());
+    for (const auto odom_stamp : laser_frame->between_next_odoms) {
+      PosePoint tmp_pose;
+      tmp_pose.pose =
+          transforms::ToRigid3d(odom_queue.at(odom_stamp)->pose.pose);
+      tmp_pose.timestamp = odom_stamp * 1e-9;
+      odom_poses.emplace_back(tmp_pose);
+    }
+    // 3. 对于laser帧前后两个里程数据进行插值
+    PoseCubicSpline odom_spline(odom_poses);
+    // 4. 计算当前扫描点的里程计位姿
+    auto global_base_pose =
+        odom_spline.interpolate(laser_frame->timestamp * 1e-9);
+    // 激光雷达在里程计下的全局坐标位姿
+    global_pose_ = global_base_pose.pose * laser_to_base;
     // 2. 使用CSpline进行插值求取laser帧各个扫描点的全局位姿；构建filtered点云
     if (!initialized_) {
       // Initialize with first odometry
@@ -476,95 +494,23 @@ public:
   /**
    * @brief Get current global pose
    */
-  geometry_msgs::msg::Pose getGlobalPose() const { return global_pose_; }
+  transforms::Rigid3d getGlobalPose() const { return global_pose_; }
 
   /**
    * @brief Reset tracker
    */
-  void reset() {
-    initialized_ = false;
-    global_pose_ = geometry_msgs::msg::Pose();
-    initial_pose_ = geometry_msgs::msg::Pose();
-    prev_odom_ = nullptr;
-  }
-
-  /**
-   * @brief Get trajectory points
-   */
-  const std::vector<geometry_msgs::msg::PoseStamped> &getTrajectory() const {
-    return trajectory_;
-  }
-
-  /**
-   * @brief Add trajectory point
-   */
-  void addTrajectoryPoint(const geometry_msgs::msg::Pose &pose,
-                          const rclcpp::Time &time) {
-    geometry_msgs::msg::PoseStamped pose_stamped;
-    pose_stamped.pose = pose;
-    pose_stamped.header.stamp = time;
-    pose_stamped.header.frame_id = "odom";
-    trajectory_.push_back(pose_stamped);
-  }
+  void reset() { initialized_ = false; }
 
 private:
   bool initialized_;
-  geometry_msgs::msg::Pose global_pose_;
-  geometry_msgs::msg::Pose initial_pose_;
-  nav_msgs::msg::Odometry::SharedPtr prev_odom_;
-  std::vector<geometry_msgs::msg::PoseStamped> trajectory_;
-
-  /**
-   * @brief Compute relative transform between two odometry poses
-   */
-  geometry_msgs::msg::Transform
-  computeRelativeTransform(const nav_msgs::msg::Odometry::SharedPtr odom1,
-                           const nav_msgs::msg::Odometry::SharedPtr odom2) {
-    geometry_msgs::msg::Transform transform;
-
-    // Compute relative translation
-    transform.translation.x =
-        odom2->pose.pose.position.x - odom1->pose.pose.position.x;
-    transform.translation.y =
-        odom2->pose.pose.position.y - odom1->pose.pose.position.y;
-    transform.translation.z =
-        odom2->pose.pose.position.z - odom1->pose.pose.position.z;
-
-    // Compute relative rotation (odom2 = odom1 * relative)
-    tf2::Quaternion q1, q2, q_rel;
-    tf2::fromMsg(odom1->pose.pose.orientation, q1);
-    tf2::fromMsg(odom2->pose.pose.orientation, q2);
-    q_rel = q1.inverse() * q2;
-    transform.rotation = tf2::toMsg(q_rel);
-
-    return transform;
-  }
-
-  /**
-   * @brief Apply transform to pose
-   */
-  void applyTransform(geometry_msgs::msg::Pose &pose,
-                      const geometry_msgs::msg::Transform &transform) {
-    // Apply rotation
-    tf2::Quaternion q_pose, q_transform;
-    tf2::fromMsg(pose.orientation, q_pose);
-    tf2::fromMsg(transform.rotation, q_transform);
-    tf2::Quaternion q_new = q_pose * q_transform;
-    pose.orientation = tf2::toMsg(q_new);
-
-    // Apply translation (rotated into new frame)
-    tf2::Vector3 trans(transform.translation.x, transform.translation.y,
-                       transform.translation.z);
-    tf2::Vector3 rotated_trans = tf2::quatRotate(q_pose, trans);
-    pose.position.x += rotated_trans.x();
-    pose.position.y += rotated_trans.y();
-    pose.position.z += rotated_trans.z();
-  }
+  transforms::Rigid3d global_pose_;
 };
 
 /**
  * @brief Point cloud distortion correction using odometry
  *  * 尝试使用laser时间片内的里程数据进行样条曲线拟合
+ *  *
+ * 矫正点云过程，同时更新laser扫描时刻激光雷达点云，以及激光雷达在里程计下的全局位姿
  * 1： xyz
  * 使用CSplines，但这并不是最好，因为它不能处理旋转；对于差速轮模型，由于其是非完全模型；其平面速度方向，应该与朝向一致；
  * 2： 对于旋转使用Squad进行角速度不变平滑；
@@ -620,6 +566,7 @@ public:
     // 4. 计算当前扫描点的里程计位姿
     auto global_base_pose =
         odom_spline.interpolate(laser_frame->timestamp * 1e-9);
+    // 激光雷达在里程计下的全局坐标位姿
     laser_frame->global_pose = global_base_pose.pose * laser_to_base;
     // 5. 计算每个点在短时里程计下的全局坐标
     int index = 0;
@@ -645,9 +592,9 @@ public:
       double point_stamp =
           laser_frame->timestamp * 1e-9 + i * laser_frame->scan->time_increment;
       PosePoint stamp_odom = odom_spline.interpolate(point_stamp);
-      auto global_point = laser_frame->global_pose.inverse() * stamp_odom.pose *
-                          laser_to_base *
-                          Eigen::Vector3d(point.x, point.y, 0.0);
+      auto corrected_laser_point = laser_frame->global_pose.inverse() *
+                                   stamp_odom.pose * laser_to_base *
+                                   Eigen::Vector3d(point.x, point.y, 0.0);
       // Interpolate odometry
       // auto interpolated_odom = interpolateOdometry(odom_start, odom_end,
       // alpha);
@@ -656,8 +603,8 @@ public:
       // Point corrected =
       //     transformPointToWorld(original_points[i], interpolated_odom);
       Point corrected_point;
-      corrected_point.x = global_point.x();
-      corrected_point.y = global_point.y();
+      corrected_point.x = corrected_laser_point.x();
+      corrected_point.y = corrected_laser_point.y();
       if (i < laser_frame->scan->intensities.size()) {
         corrected_point.intensity = laser_frame->scan->intensities[i];
       } else {
@@ -745,6 +692,21 @@ public:
     this->declare_parameter("enable_interpolation", false);
     this->declare_parameter("min_confidence", 0.5);
 
+    // Global tracking parameters
+    this->declare_parameter("global_tracking.match_distance_threshold", 0.3);
+    this->declare_parameter("global_tracking.match_distance_inactive", 0.5);
+    this->declare_parameter("global_tracking.confirm_time_window", 1.0);
+    this->declare_parameter("global_tracking.min_detections_in_window", 6);
+    this->declare_parameter("global_tracking.inactive_timeout", 5.0);
+    this->declare_parameter("global_tracking.max_inactive_time", 60.0);
+    this->declare_parameter("global_tracking.position_filter_alpha", 0.3);
+    this->declare_parameter("global_tracking.position_filter_beta", 0.2);
+    this->declare_parameter("global_tracking.min_std_dev", 0.02);
+    this->declare_parameter("global_tracking.max_std_dev", 0.5);
+    this->declare_parameter("global_tracking.min_confidence_to_track", 0.3);
+    this->declare_parameter("global_tracking.confidence_filter_alpha", 0.2);
+    this->declare_parameter("global_tracking.diameter_filter_alpha", 0.3);
+
     // Get parameters
     bag_path_ = this->get_parameter("bag_path").as_string();
     scan_topic_ = this->get_parameter("scan_topic").as_string();
@@ -758,6 +720,44 @@ public:
     enable_interpolation_ =
         this->get_parameter("enable_interpolation").as_bool();
     min_confidence_ = this->get_parameter("min_confidence").as_double();
+
+    // Configure global tracking
+    GlobalReflectorTracker::Config tracking_config;
+    tracking_config.match_distance_threshold =
+        this->get_parameter("global_tracking.match_distance_threshold")
+            .as_double();
+    tracking_config.match_distance_inactive =
+        this->get_parameter("global_tracking.match_distance_inactive")
+            .as_double();
+    tracking_config.confirm_time_window =
+        this->get_parameter("global_tracking.confirm_time_window").as_double();
+    tracking_config.min_detections_in_window =
+        this->get_parameter("global_tracking.min_detections_in_window")
+            .as_int();
+    tracking_config.inactive_timeout =
+        this->get_parameter("global_tracking.inactive_timeout").as_double();
+    tracking_config.max_inactive_time =
+        this->get_parameter("global_tracking.max_inactive_time").as_double();
+    tracking_config.position_filter_alpha =
+        this->get_parameter("global_tracking.position_filter_alpha")
+            .as_double();
+    tracking_config.position_filter_beta =
+        this->get_parameter("global_tracking.position_filter_beta").as_double();
+    tracking_config.min_std_dev =
+        this->get_parameter("global_tracking.min_std_dev").as_double();
+    tracking_config.max_std_dev =
+        this->get_parameter("global_tracking.max_std_dev").as_double();
+    tracking_config.min_confidence_to_track =
+        this->get_parameter("global_tracking.min_confidence_to_track")
+            .as_double();
+    tracking_config.confidence_filter_alpha =
+        this->get_parameter("global_tracking.confidence_filter_alpha")
+            .as_double();
+    tracking_config.diameter_filter_alpha =
+        this->get_parameter("global_tracking.diameter_filter_alpha")
+            .as_double();
+
+    global_reflector_tracker_ = GlobalReflectorTracker(tracking_config);
 
     // Configure detection modules
     configureDetectionModules();
@@ -1069,12 +1069,13 @@ private:
         frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
 
     // Update global pose tracker
-    // if (frame->odom) {
-    //   pose_tracker_.update(frame->odom);
-    //   frame->global_pose = pose_tracker_.getGlobalPose();
-    //   pose_tracker_.addTrajectoryPoint(frame->global_pose,
-    //                                    rclcpp::Time(frame->timestamp));
-    // }
+    // INFO:
+    // 激光雷达在里程计下的全局坐标位姿已经在correctDistortion中进行更新了，这里不需要再更新了
+    // 而在线更新机制就要更为复杂，没有办法预测到未来的激光里程计的位姿，所以在线跟踪器应该采用运动学约束
+    // 来进行全局位姿的跟踪更新，并进行矫正
+    // pose_tracker_.update(frame, odom_map_,
+    //                      transforms::ToRigid3d(laser_to_base_));
+    // frame->global_pose = pose_tracker_.getGlobalPose();
 
     // // Apply distortion correction
     // if (frame_index > 0 && frame->odom && frames_[frame_index - 1]->odom) {
@@ -1134,6 +1135,18 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
                 frame->reflectors.size());
+
+    // Update global reflector tracker
+    global_reflector_tracker_.update(frame->reflectors, frame->global_pose,
+                                     frame->timestamp);
+    // Get confirmed reflectors for tracking
+    // TODO: 获取匹配后的反光柱；
+    // 这里获取的是短时内全部的已经确定为真实的激活反光柱；对于想看到
+    // 经过跟踪过滤后反光柱位置和判定情况的情况下，需要再重新获取。
+    auto confirmed_reflectors =
+        global_reflector_tracker_.getConfirmedReflectors();
+    RCLCPP_INFO(this->get_logger(), "全局跟踪: 已确认 %zu 个反光柱",
+                confirmed_reflectors.size());
 
     // Visualization data is ready, will be published by timer
   }
@@ -1247,8 +1260,9 @@ private:
                   circle_fit.total_points, circle_fit.inner_error,
                   circle_fit.outline_error, circle_fit.concave_ratio,
                   circle_fit.convex_ratio);
-      if(circle_fit.concave_ratio > 0.2) {
-        RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合为凹型,判定失效", idx);
+      if (circle_fit.concave_ratio > 0.2) {
+        RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合为凹型,判定失效",
+                    idx);
         continue;
       }
       if (circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
@@ -1312,20 +1326,28 @@ private:
     pulishOriginLaserScan(frame->scan);
 
     // Publish point cloud with current timestamp
-    publishPointCloud(frame->compensated_points);
+    // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
+    publishPointCloud(frame->compensated_points, true, frame->global_pose);
 
     // 发布阈值滤波后的点云
-    publishFilteredPointCloud(frame->filtered_points);
+    // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
+    publishFilteredPointCloud(frame->filtered_points, true, frame->global_pose);
 
     // 发布进行圆形拟合后的点云
-    publishClusterCircleFitPointCloud(this->cluster_circle_points_);
+    // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
+    publishClusterCircleFitPointCloud(this->cluster_circle_points_, true,
+                                      frame->global_pose);
 
     // Publish reflector markers with current timestamp
-    // 新增可视化拟合圆
-    publishReflectorMarkers(frame->reflectors);
+    // 新增可视化拟合圆, 默认是以laser为准，可原则是否以map为frame
+    publishReflectorMarkers(frame->reflectors, true, frame->global_pose);
+
+    // Publish tracked reflector markers
+    // 新增可视化跟踪后的反光柱, 默认是以laser为准，可原则是否以map为frame
+    publishTrackedReflectorMarkers(true, frame->global_pose);
 
     // Publish trajectory with current timestamp
-    publishTrajectory();
+    // publishTrajectory();
   }
 
   /**
@@ -1408,10 +1430,15 @@ private:
   /**
    * @brief Publish point cloud with current timestamp
    */
-  void publishPointCloud(const std::vector<Point> &points) {
+  void publishPointCloud(const std::vector<Point> &points,
+                         bool use_mapframe = false,
+                         const transforms::Rigid3d &global_pose =
+                             transforms::Rigid3d::Identity()) {
     sensor_msgs::msg::PointCloud2 cloud_msg;
     cloud_msg.header.stamp = this->now();
     cloud_msg.header.frame_id = "laser";
+    if (use_mapframe)
+      cloud_msg.header.frame_id = "map";
     cloud_msg.height = 1;
     cloud_msg.width = points.size();
 
@@ -1442,12 +1469,18 @@ private:
     cloud_msg.data.resize(cloud_msg.row_step);
 
     for (size_t i = 0; i < points.size(); ++i) {
+      Eigen::Vector3d point = Eigen::Vector3d(points[i].x, points[i].y, 0.0);
+
+      if (use_mapframe) {
+        point = global_pose * Eigen::Vector3d(points[i].x, points[i].y, 0.0);
+      }
+
       uint8_t *ptr = &cloud_msg.data[i * cloud_msg.point_step];
 
-      float x = static_cast<float>(points[i].x);
+      float x = static_cast<float>(point.x());
       std::memcpy(ptr + 0, &x, sizeof(float));
 
-      float y = static_cast<float>(points[i].y);
+      float y = static_cast<float>(point.y());
       std::memcpy(ptr + 4, &y, sizeof(float));
 
       float z = 0.0f;
@@ -1460,10 +1493,15 @@ private:
     cluster_pub_->publish(cloud_msg);
   }
 
-  void publishFilteredPointCloud(const std::vector<Point> &points) {
+  void publishFilteredPointCloud(const std::vector<Point> &points,
+                                 bool use_mapframe = false,
+                                 const transforms::Rigid3d &global_pose =
+                                     transforms::Rigid3d::Identity()) {
     sensor_msgs::msg::PointCloud2 cloud_msg;
     cloud_msg.header.stamp = this->now();
     cloud_msg.header.frame_id = "laser";
+    if (use_mapframe)
+      cloud_msg.header.frame_id = "map";
     cloud_msg.height = 1;
     cloud_msg.width = points.size();
 
@@ -1495,11 +1533,16 @@ private:
 
     for (size_t i = 0; i < points.size(); ++i) {
       uint8_t *ptr = &cloud_msg.data[i * cloud_msg.point_step];
+      Eigen::Vector3d point = Eigen::Vector3d(points[i].x, points[i].y, 0.0);
 
-      float x = static_cast<float>(points[i].x);
+      if (use_mapframe) {
+        point = global_pose * Eigen::Vector3d(points[i].x, points[i].y, 0.0);
+      }
+
+      float x = static_cast<float>(point.x());
       std::memcpy(ptr + 0, &x, sizeof(float));
 
-      float y = static_cast<float>(points[i].y);
+      float y = static_cast<float>(point.y());
       std::memcpy(ptr + 4, &y, sizeof(float));
 
       float z = 0.0f;
@@ -1512,10 +1555,16 @@ private:
     filtered_pub_->publish(cloud_msg);
   }
 
-  void publishClusterCircleFitPointCloud(const std::vector<Point> &points) {
+  void
+  publishClusterCircleFitPointCloud(const std::vector<Point> &points,
+                                    bool use_mapframe = false,
+                                    const transforms::Rigid3d &global_pose =
+                                        transforms::Rigid3d::Identity()) {
     sensor_msgs::msg::PointCloud2 cloud_msg;
     cloud_msg.header.stamp = this->now();
     cloud_msg.header.frame_id = "laser";
+    if (use_mapframe)
+      cloud_msg.header.frame_id = "map";
     cloud_msg.height = 1;
     cloud_msg.width = points.size();
 
@@ -1547,11 +1596,15 @@ private:
 
     for (size_t i = 0; i < points.size(); ++i) {
       uint8_t *ptr = &cloud_msg.data[i * cloud_msg.point_step];
+      Eigen::Vector3d point = Eigen::Vector3d(points[i].x, points[i].y, 0.0);
 
-      float x = static_cast<float>(points[i].x);
+      if (use_mapframe) {
+        point = global_pose * Eigen::Vector3d(points[i].x, points[i].y, 0.0);
+      }
+      float x = static_cast<float>(point.x());
       std::memcpy(ptr + 0, &x, sizeof(float));
 
-      float y = static_cast<float>(points[i].y);
+      float y = static_cast<float>(point.y());
       std::memcpy(ptr + 4, &y, sizeof(float));
 
       float z = 0.0f;
@@ -1567,8 +1620,10 @@ private:
   /**
    * @brief Publish reflector markers with current timestamp
    */
-  void
-  publishReflectorMarkers(const std::vector<DetectedReflector> &reflectors) {
+  void publishReflectorMarkers(const std::vector<DetectedReflector> &reflectors,
+                               bool use_mapframe = false,
+                               const transforms::Rigid3d &global_pose =
+                                   transforms::Rigid3d::Identity()) {
     visualization_msgs::msg::MarkerArray marker_array;
     // Resize to accommodate both cylinder markers and text labels
     marker_array.markers.resize(reflectors.size() * 3);
@@ -1578,6 +1633,8 @@ private:
       visualization_msgs::msg::Marker cylinder_marker;
       cylinder_marker.header.stamp = this->now();
       cylinder_marker.header.frame_id = "laser";
+      if (use_mapframe)
+        cylinder_marker.header.frame_id = "map";
       cylinder_marker.ns = "reflective_posts";
       cylinder_marker.id = i * 3; // Even IDs for cylinders
       cylinder_marker.type = visualization_msgs::msg::Marker::CYLINDER;
@@ -1585,6 +1642,13 @@ private:
 
       cylinder_marker.pose.position.x = reflectors[i].center.x;
       cylinder_marker.pose.position.y = reflectors[i].center.y;
+      if (use_mapframe) {
+        Eigen::Vector3d global_reflector_pos =
+            global_pose * Eigen::Vector3d(reflectors[i].center.x,
+                                          reflectors[i].center.y, 0.0);
+        cylinder_marker.pose.position.x = global_reflector_pos.x();
+        cylinder_marker.pose.position.y = global_reflector_pos.y();
+      }
       cylinder_marker.pose.position.z = 0.0;
       cylinder_marker.pose.orientation.w = 1.0;
 
@@ -1608,13 +1672,15 @@ private:
       visualization_msgs::msg::Marker cylinder_marker2;
       cylinder_marker2.header.stamp = this->now();
       cylinder_marker2.header.frame_id = "laser";
+      if (use_mapframe)
+        cylinder_marker2.header.frame_id = "map";
       cylinder_marker2.ns = "reflective_posts";
       cylinder_marker2.id = i * 3 + 1; // Even IDs for cylinders
       cylinder_marker2.type = visualization_msgs::msg::Marker::CYLINDER;
       cylinder_marker2.action = visualization_msgs::msg::Marker::ADD;
 
-      cylinder_marker2.pose.position.x = reflectors[i].center.x;
-      cylinder_marker2.pose.position.y = reflectors[i].center.y;
+      cylinder_marker2.pose.position.x = cylinder_marker.pose.position.x;
+      cylinder_marker2.pose.position.y = cylinder_marker.pose.position.y;
       cylinder_marker2.pose.position.z = 0.0;
       cylinder_marker2.pose.orientation.w = 1.0;
 
@@ -1636,13 +1702,15 @@ private:
       visualization_msgs::msg::Marker text_marker;
       text_marker.header.stamp = this->now();
       text_marker.header.frame_id = "laser";
+      if (use_mapframe)
+        text_marker.header.frame_id = "map";
       text_marker.ns = "reflective_posts";
       text_marker.id = i * 3 + 2; // Odd IDs for text labels
       text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
       text_marker.action = visualization_msgs::msg::Marker::ADD;
 
-      text_marker.pose.position.x = reflectors[i].center.x;
-      text_marker.pose.position.y = reflectors[i].center.y;
+      text_marker.pose.position.x = cylinder_marker.pose.position.x;
+      text_marker.pose.position.y = cylinder_marker.pose.position.y;
       text_marker.pose.position.z = 0.6; // Position text above the cylinder
       text_marker.pose.orientation.w = 1.0;
 
@@ -1665,36 +1733,187 @@ private:
   }
 
   /**
+   * @brief Publish tracked reflector markers
+   * 可选择以laser为基准，还是以全局map为基准
+   * 1. Sphere:对于时间窗内确认的反光柱，显示为绿色；
+   * 对于未确认的反光柱，设定为黄色； 已经确认但不在跟踪窗内，显示为绿色。
+   * 2. Text: [C]跟踪到的确认反光柱； [T]: 检测到但未确认为反光柱；
+   * [I]已经确认但不在跟踪窗范围内的反光柱
+   * 3. Cylinder:
+   * 显示为当前跟踪器内的放光柱的平滑不确定性信息；以反光柱位置的距离方法，构建平面圆。
+   */
+  void publishTrackedReflectorMarkers(bool use_mapframe = false,
+                                      const transforms::Rigid3d &global_pose =
+                                          transforms::Rigid3d::Identity()) {
+    auto all_reflectors = global_reflector_tracker_.getAllTrackedReflectors();
+
+    visualization_msgs::msg::MarkerArray marker_array;
+    // Reserve space for all tracked reflectors
+    marker_array.markers.resize(all_reflectors.size() * 3);
+
+    for (size_t i = 0; i < all_reflectors.size(); ++i) {
+      const auto &tracker = all_reflectors[i];
+
+      // Color based on state
+      std_msgs::msg::ColorRGBA color;
+      if (tracker.state == TrackedReflector::CONFIRMED) {
+        // Green for confirmed reflectors
+        color.r = 0.0;
+        color.g = 1.0;
+        color.b = 0.0;
+        color.a = 0.8;
+      } else if (tracker.state == TrackedReflector::TENTATIVE) {
+        // Yellow for tentative reflectors
+        color.r = 1.0;
+        color.g = 1.0;
+        color.b = 0.0;
+        color.a = 0.6;
+      } else if (tracker.state == TrackedReflector::INACTIVE) {
+        // Blue for inactive reflectors
+        color.r = 0.0;
+        color.g = 0.0;
+        color.b = 1.0;
+        color.a = 0.4;
+      }
+      // reflector位置
+      Eigen::Vector3d reflector_pos = Eigen::Vector3d(
+          tracker.filtered_position.x, tracker.filtered_position.y, 0.0);
+      Eigen::Vector3d global_relector_pos = reflector_pos;
+      // if (use_mapframe) {
+      //   global_relector_pos = global_pose * reflector_pos;
+      // }
+
+      // Create sphere marker for the tracked position
+      visualization_msgs::msg::Marker sphere_marker;
+      sphere_marker.header.stamp = this->now();
+      sphere_marker.header.frame_id = "laser";
+      if (use_mapframe)
+        sphere_marker.header.frame_id = "map";
+      sphere_marker.ns = "tracked_reflectors";
+      sphere_marker.id = i * 3;
+      sphere_marker.type = visualization_msgs::msg::Marker::SPHERE;
+      sphere_marker.action = visualization_msgs::msg::Marker::ADD;
+
+      sphere_marker.pose.position.x = global_relector_pos.x();
+      sphere_marker.pose.position.y = global_relector_pos.y();
+      sphere_marker.pose.position.z = 0.0;
+      sphere_marker.pose.orientation.w = 1.0;
+
+      sphere_marker.scale.x = tracker.diameter;
+      sphere_marker.scale.y = tracker.diameter;
+      sphere_marker.scale.z = 0.5;
+
+      sphere_marker.color = color;
+      sphere_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      marker_array.markers[i * 3] = sphere_marker;
+
+      // Create text label for global ID
+      visualization_msgs::msg::Marker text_marker;
+      text_marker.header.stamp = this->now();
+      text_marker.header.frame_id = "laser";
+      if (use_mapframe)
+        text_marker.header.frame_id = "map";
+      text_marker.ns = "tracked_reflectors";
+      text_marker.id = i * 3 + 1;
+      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text_marker.action = visualization_msgs::msg::Marker::ADD;
+
+      text_marker.pose.position.x = global_relector_pos.x();
+      text_marker.pose.position.y = global_relector_pos.y();
+      text_marker.pose.position.z = 0.6;
+      text_marker.pose.orientation.w = 1.0;
+
+      text_marker.scale.z = 0.3;
+
+      text_marker.color.r = 1.0;
+      text_marker.color.g = 1.0;
+      text_marker.color.b = 1.0;
+      text_marker.color.a = 1.0;
+
+      // Display global ID and state
+      std::string state_str;
+      if (tracker.state == TrackedReflector::CONFIRMED) {
+        state_str = "C";
+      } else if (tracker.state == TrackedReflector::TENTATIVE) {
+        state_str = "T";
+      } else {
+        state_str = "I";
+      }
+      text_marker.text = "G" + std::to_string(tracker.global_id) + "[" +
+                         state_str + "] " +
+                         std::to_string(tracker.total_detection_count) + "d";
+
+      text_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      marker_array.markers[i * 3 + 1] = text_marker;
+
+      // Create uncertainty circle (position standard deviation)
+      visualization_msgs::msg::Marker uncertainty_marker;
+      uncertainty_marker.header.stamp = this->now();
+      uncertainty_marker.header.frame_id = "laser";
+      if (use_mapframe)
+        uncertainty_marker.header.frame_id = "map";
+      uncertainty_marker.ns = "tracked_reflectors";
+      uncertainty_marker.id = i * 3 + 2;
+      uncertainty_marker.type = visualization_msgs::msg::Marker::CYLINDER;
+      uncertainty_marker.action = visualization_msgs::msg::Marker::ADD;
+
+      uncertainty_marker.pose.position.x = global_relector_pos.x();
+      uncertainty_marker.pose.position.y = global_relector_pos.y();
+      uncertainty_marker.pose.position.z = 0.0;
+      uncertainty_marker.pose.orientation.w = 1.0;
+
+      // Show uncertainty as 2x standard deviation
+      double uncertainty_radius = 2.0 * tracker.position_std_dev;
+      uncertainty_marker.scale.x = uncertainty_radius * 2.0;
+      uncertainty_marker.scale.y = uncertainty_radius * 2.0;
+      uncertainty_marker.scale.z = 0.02;
+
+      uncertainty_marker.color.r = 0.5;
+      uncertainty_marker.color.g = 0.5;
+      uncertainty_marker.color.b = 0.5;
+      uncertainty_marker.color.a = 0.3;
+
+      uncertainty_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      marker_array.markers[i * 3 + 2] = uncertainty_marker;
+    }
+
+    tracked_marker_pub_->publish(marker_array);
+  }
+
+  /**
    * @brief Publish trajectory
    */
   void publishTrajectory() {
-    const auto &trajectory = pose_tracker_.getTrajectory();
-    if (trajectory.empty()) {
-      return;
-    }
+    // const auto &trajectory = pose_tracker_.getTrajectory();
+    // if (trajectory.empty()) {
+    //   return;
+    // }
 
-    visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "odom";
-    marker.header.stamp = this->now();
-    marker.ns = "trajectory";
-    marker.id = 0;
-    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-    marker.action = visualization_msgs::msg::Marker::ADD;
+    // visualization_msgs::msg::Marker marker;
+    // marker.header.frame_id = "odom";
+    // marker.header.stamp = this->now();
+    // marker.ns = "trajectory";
+    // marker.id = 0;
+    // marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    // marker.action = visualization_msgs::msg::Marker::ADD;
 
-    marker.points.resize(trajectory.size());
-    for (size_t i = 0; i < trajectory.size(); ++i) {
-      marker.points[i].x = trajectory[i].pose.position.x;
-      marker.points[i].y = trajectory[i].pose.position.y;
-      marker.points[i].z = 0.0;
-    }
+    // marker.points.resize(trajectory.size());
+    // for (size_t i = 0; i < trajectory.size(); ++i) {
+    //   marker.points[i].x = trajectory[i].pose.position.x;
+    //   marker.points[i].y = trajectory[i].pose.position.y;
+    //   marker.points[i].z = 0.0;
+    // }
 
-    marker.scale.x = 0.05;
-    marker.color.r = 0.0;
-    marker.color.g = 1.0;
-    marker.color.b = 0.0;
-    marker.color.a = 0.8;
+    // marker.scale.x = 0.05;
+    // marker.color.r = 0.0;
+    // marker.color.g = 1.0;
+    // marker.color.b = 0.0;
+    // marker.color.a = 0.8;
 
-    trajectory_pub_->publish(marker);
+    // trajectory_pub_->publish(marker);
   }
 
   /**
@@ -1793,6 +2012,9 @@ private:
 
   // Pose tracking
   PoseTracker pose_tracker_;
+
+  // Global reflector tracking
+  GlobalReflectorTracker global_reflector_tracker_;
 
   // Detection modules
   FixedDBSCAN fixed_dbscan_;

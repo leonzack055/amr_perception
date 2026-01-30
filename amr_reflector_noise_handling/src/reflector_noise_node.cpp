@@ -381,7 +381,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱", reflectors.size());
         
         // Phase 4: Update tracking
-        std::vector<TrackedReflector> tracked_reflectors;
+        std::vector<LegacyTrackedReflector> tracked_reflectors;
         if (enable_tracking_) {
             tracked_reflectors = tracker_.update(reflectors, scan_msg->header.stamp);
             
@@ -500,7 +500,7 @@ private:
         landmark_pub_->publish(landmark_list);
     }
     
-    void publishLandmarks(const std::vector<TrackedReflector>& reflectors,
+    void publishLandmarks(const std::vector<LegacyTrackedReflector>& reflectors,
                         const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
         cartographer_ros_msgs::msg::LandmarkList landmark_list;
         landmark_list.header = scan_msg->header;
@@ -572,7 +572,7 @@ private:
         marker_pub_->publish(marker_array);
     }
     
-    void publishMarkers(const std::vector<TrackedReflector>& reflectors,
+    void publishMarkers(const std::vector<LegacyTrackedReflector>& reflectors,
                      const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
         visualization_msgs::msg::MarkerArray marker_array;
         marker_array.markers.resize(reflectors.size());
