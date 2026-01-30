@@ -1081,8 +1081,9 @@ private:
     // 激光雷达在里程计下的全局坐标位姿已经在correctDistortion中进行更新了，这里不需要再更新了
     // 而在线更新机制就要更为复杂，没有办法预测到未来的激光里程计的位姿，所以在线跟踪器应该采用运动学约束
     // 来进行全局位姿的跟踪更新，并进行矫正
-    pose_tracker_.update(frame, odom_map_,
-                         transforms::ToRigid3d(laser_to_base_));
+    // pose_tracker_.update(frame, odom_map_,
+    //                      transforms::ToRigid3d(laser_to_base_));
+    
     // frame->global_pose = pose_tracker_.getGlobalPose();
 
     // // Apply distortion correction
@@ -1355,7 +1356,7 @@ private:
     publishTrackedReflectorMarkers(true, frame->global_pose);
 
     // Publish trajectory with current timestamp
-    publishTrajectory();
+    // publishTrajectory();
 
     // 发布laser的里程计位置
     publishLaserOdometry(frame->global_pose);
