@@ -483,7 +483,9 @@ public:
         odom_spline.interpolate(laser_frame->timestamp * 1e-9);
     // 激光雷达在里程计下的全局坐标位姿
     global_pose_ = global_base_pose.pose * laser_to_base;
-    // 2. 使用CSpline进行插值求取laser帧各个扫描点的全局位姿；构建filtered点云
+    trajectory_.push_back(global_pose_);
+    // 2.
+    // 使用CSpline进行插值求取laser帧各个扫描点的全局位姿；构建filtered点云
     if (!initialized_) {
       // Initialize with first odometry
       initialized_ = true;
@@ -496,6 +498,9 @@ public:
    */
   transforms::Rigid3d getGlobalPose() const { return global_pose_; }
 
+  const std::vector<transforms::Rigid3d> &getTrajectory() const {
+    return trajectory_;
+  }
   /**
    * @brief Reset tracker
    */
@@ -504,6 +509,7 @@ public:
 private:
   bool initialized_;
   transforms::Rigid3d global_pose_;
+  std::vector<transforms::Rigid3d> trajectory_;
 };
 
 /**
@@ -783,6 +789,8 @@ public:
     tracked_marker_pub_ =
         this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/reflector_tracked_markers", 10);
+    laser_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+        "/reflector_laser_pose", 10);
 
     // Create timer for continuous publishing (10 Hz)
     publish_timer_ = this->create_wall_timer(
@@ -1073,8 +1081,8 @@ private:
     // 激光雷达在里程计下的全局坐标位姿已经在correctDistortion中进行更新了，这里不需要再更新了
     // 而在线更新机制就要更为复杂，没有办法预测到未来的激光里程计的位姿，所以在线跟踪器应该采用运动学约束
     // 来进行全局位姿的跟踪更新，并进行矫正
-    // pose_tracker_.update(frame, odom_map_,
-    //                      transforms::ToRigid3d(laser_to_base_));
+    pose_tracker_.update(frame, odom_map_,
+                         transforms::ToRigid3d(laser_to_base_));
     // frame->global_pose = pose_tracker_.getGlobalPose();
 
     // // Apply distortion correction
@@ -1347,7 +1355,10 @@ private:
     publishTrackedReflectorMarkers(true, frame->global_pose);
 
     // Publish trajectory with current timestamp
-    // publishTrajectory();
+    publishTrajectory();
+
+    // 发布laser的里程计位置
+    publishLaserOdometry(frame->global_pose);
   }
 
   /**
@@ -1758,8 +1769,8 @@ private:
       std_msgs::msg::ColorRGBA color;
       if (tracker.state == TrackedReflector::CONFIRMED) {
         // Green for confirmed reflectors
-        color.r = 0.0;
-        color.g = 1.0;
+        color.r = 1.0;
+        color.g = 0.0;
         color.b = 0.0;
         color.a = 0.8;
       } else if (tracker.state == TrackedReflector::TENTATIVE) {
@@ -1773,7 +1784,7 @@ private:
         color.r = 0.0;
         color.g = 0.0;
         color.b = 1.0;
-        color.a = 0.4;
+        color.a = 0.8;
       }
       // reflector位置
       Eigen::Vector3d reflector_pos = Eigen::Vector3d(
@@ -1872,7 +1883,7 @@ private:
 
       uncertainty_marker.color.r = 0.5;
       uncertainty_marker.color.g = 0.5;
-      uncertainty_marker.color.b = 0.5;
+      uncertainty_marker.color.b = 0.0;
       uncertainty_marker.color.a = 0.3;
 
       uncertainty_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
@@ -1887,35 +1898,42 @@ private:
    * @brief Publish trajectory
    */
   void publishTrajectory() {
-    // const auto &trajectory = pose_tracker_.getTrajectory();
-    // if (trajectory.empty()) {
-    //   return;
-    // }
+    const auto &trajectory = pose_tracker_.getTrajectory();
+    if (trajectory.empty()) {
+      return;
+    }
 
-    // visualization_msgs::msg::Marker marker;
-    // marker.header.frame_id = "odom";
-    // marker.header.stamp = this->now();
-    // marker.ns = "trajectory";
-    // marker.id = 0;
-    // marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-    // marker.action = visualization_msgs::msg::Marker::ADD;
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "map";
+    marker.header.stamp = this->now();
+    marker.ns = "trajectory";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
 
-    // marker.points.resize(trajectory.size());
-    // for (size_t i = 0; i < trajectory.size(); ++i) {
-    //   marker.points[i].x = trajectory[i].pose.position.x;
-    //   marker.points[i].y = trajectory[i].pose.position.y;
-    //   marker.points[i].z = 0.0;
-    // }
+    marker.points.resize(trajectory.size());
+    for (size_t i = 0; i < trajectory.size(); ++i) {
+      marker.points[i].x = trajectory[i].translation().x();
+      marker.points[i].y = trajectory[i].translation().y();
+      marker.points[i].z = 0.0;
+    }
 
-    // marker.scale.x = 0.05;
-    // marker.color.r = 0.0;
-    // marker.color.g = 1.0;
-    // marker.color.b = 0.0;
-    // marker.color.a = 0.8;
+    marker.scale.x = 0.05;
+    marker.color.r = 0.0;
+    marker.color.g = 1.0;
+    marker.color.b = 0.6;
+    marker.color.a = 0.8;
 
-    // trajectory_pub_->publish(marker);
+    trajectory_pub_->publish(marker);
   }
 
+  void publishLaserOdometry(const transforms::Rigid3d &global_pose) {
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.frame_id = "map";
+    pose_msg.header.stamp = this->now();
+    pose_msg.pose = transforms::ToGeometryMsgPose(global_pose);
+    laser_pose_pub_->publish(pose_msg);
+  }
   /**
    * @brief Convert laser scan to points
    */
@@ -2039,6 +2057,7 @@ private:
       cluster_circle_points_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr trajectory_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr laser_pose_pub_;
 
   // Timer for continuous publishing
   rclcpp::TimerBase::SharedPtr publish_timer_;

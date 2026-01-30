@@ -109,7 +109,7 @@ reflector_noise_handling:
       confirm_time_window: 1.0
       
       # 时间窗口内的最小检测次数
-      min_detections_in_window: 6
+      min_detections_in_window: 8
       
       # === 状态管理参数 ===
       # 非活跃超时时间（秒）- 超过此时间未检测到，从CONFIRMED转为INACTIVE
