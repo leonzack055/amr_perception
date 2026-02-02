@@ -64,12 +64,37 @@ ament_target_dependencies(
   landmark_localization
 )
 
-install(TARGETS reflector_detector_circle_fit
+# 激光雷达检测测试用例
+add_executable(reflector_detector_circle_xs src/reflector_detector_circle_xs.cpp)
+target_include_directories(reflector_detector_circle_xs PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  # "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+)
+target_link_libraries(reflector_detector_circle_xs
+  landmark_localization::reflective_post_detector
+  landmark_localization::landmark_assigner
+)
+target_compile_features(reflector_detector_circle_xs PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+ament_target_dependencies(
+  reflector_detector_circle_xs
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  cartographer_ros_msgs
+  visualization_msgs
+  tf2
+  tf2_ros
+  absl
+  landmark_localization
+)
+
+install(TARGETS reflector_detector_circle_fit reflector_detector_circle_xs
   DESTINATION lib/${PROJECT_NAME})
   
 # Install launch files
 install(DIRECTORY
-  launch/
+  launch
   DESTINATION share/${PROJECT_NAME}
 )
 

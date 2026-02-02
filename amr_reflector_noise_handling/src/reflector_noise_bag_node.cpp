@@ -1083,7 +1083,7 @@ private:
     // 来进行全局位姿的跟踪更新，并进行矫正
     // pose_tracker_.update(frame, odom_map_,
     //                      transforms::ToRigid3d(laser_to_base_));
-    
+
     // frame->global_pose = pose_tracker_.getGlobalPose();
 
     // // Apply distortion correction
@@ -1158,6 +1158,16 @@ private:
                 confirmed_reflectors.size());
 
     // Visualization data is ready, will be published by timer
+    for(auto &reflector : confirmed_reflectors) {
+      auto local_postion = frame->global_pose.inverse() *
+                           Eigen::Vector3d(reflector.global_position.x,
+                                           reflector.global_position.y, 0.0);
+      reflector.global_position.x = local_postion.x();
+      reflector.global_position.y = local_postion.y();
+    }
+    auto confirmed_detected_reflectors =
+        confirmDetetedReflectors(frame->reflectors, confirmed_reflectors);
+    frame->reflectors = confirmed_detected_reflectors;
   }
   /**
    * @brief
@@ -1323,6 +1333,31 @@ private:
   }
 
   /**
+   * @brief 计算检测到的Reflectors与跟踪器输出的Confirm之间的结果，来给出确认的检测值
+   */
+  std::vector<DetectedReflector> confirmDetetedReflectors(
+      const std::vector<DetectedReflector> &reflectors,
+      const std::vector<TrackedReflector> &confirmed_local_reflectors) {
+    std::vector<DetectedReflector> confirmed_reflectors;
+
+    // 计算匹配距离
+    // double min_distance = std::numeric_limits<double>::max();
+    // double matched_idx = -1;
+    // double min_matched_distance = 0.1;
+    // 直接利用确认后的反光柱位置进行匹配
+    for (int i = 0; i < reflectors.size(); i++) {
+      for (int j = 0; j < confirmed_local_reflectors.size(); j++) {
+        if (reflectors[i].center.distanceTo(
+                confirmed_local_reflectors[j].global_position) <
+            (confirmed_local_reflectors[j].position_std_dev * 2)) {
+          confirmed_reflectors.push_back(reflectors[i]);
+        }
+      }
+    }
+    return confirmed_reflectors;
+  }
+
+  /**
    * @brief Timer callback for continuous publishing
    */
   void publishTimerCallback() {
@@ -1336,24 +1371,25 @@ private:
 
     // Publish point cloud with current timestamp
     // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
-    publishPointCloud(frame->compensated_points, true, frame->global_pose);
+    publishPointCloud(frame->compensated_points, false, frame->global_pose);
 
     // 发布阈值滤波后的点云
     // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
-    publishFilteredPointCloud(frame->filtered_points, true, frame->global_pose);
+    publishFilteredPointCloud(frame->filtered_points, false,
+                              frame->global_pose);
 
     // 发布进行圆形拟合后的点云
     // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
-    publishClusterCircleFitPointCloud(this->cluster_circle_points_, true,
+    publishClusterCircleFitPointCloud(this->cluster_circle_points_, false,
                                       frame->global_pose);
 
     // Publish reflector markers with current timestamp
     // 新增可视化拟合圆, 默认是以laser为准，可原则是否以map为frame
-    publishReflectorMarkers(frame->reflectors, true, frame->global_pose);
+    publishReflectorMarkers(frame->reflectors, false, frame->global_pose);
 
     // Publish tracked reflector markers
     // 新增可视化跟踪后的反光柱, 默认是以laser为准，可原则是否以map为frame
-    publishTrackedReflectorMarkers(true, frame->global_pose);
+    // publishTrackedReflectorMarkers(false, frame->global_pose);
 
     // Publish trajectory with current timestamp
     // publishTrajectory();
@@ -1791,9 +1827,9 @@ private:
       Eigen::Vector3d reflector_pos = Eigen::Vector3d(
           tracker.filtered_position.x, tracker.filtered_position.y, 0.0);
       Eigen::Vector3d global_relector_pos = reflector_pos;
-      // if (use_mapframe) {
-      //   global_relector_pos = global_pose * reflector_pos;
-      // }
+      if (!use_mapframe) {
+        global_relector_pos = global_pose.inverse() * reflector_pos;
+      }
 
       // Create sphere marker for the tracked position
       visualization_msgs::msg::Marker sphere_marker;
