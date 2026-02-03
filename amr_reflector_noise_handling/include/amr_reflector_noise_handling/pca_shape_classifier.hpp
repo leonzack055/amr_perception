@@ -36,10 +36,6 @@ struct ShapeClassificationParams {
   double min_elongation_for_board = 3.0;  // 反光板最小延伸度
   double min_linearity_for_board = 0.7;   // 反光板最小线性度
   double max_linearity_for_post = 0.5;    // 反光柱最大线性度
-  double min_circularity_for_post = 0.8;  // 反光柱最小圆形度
-  double min_circularity_for_board = 0.5; // 反光板最大圆形度
-  double max_circularity_for_noise = 0.4; // 噪声最大圆形度
-  double max_fit_error_for_noise = 0.05;  // 噪声最大拟合误差
 };
 
 /**
@@ -73,8 +69,7 @@ public:
    * @param circle_fitter 圆拟合器（用于计算圆形度）
    * @return ShapeFeatures 形状特征
    */
-  ShapeFeatures computeShapeFeatures(const std::vector<Point> &points,
-                                     const CircleFitter &circle_fitter) const {
+  ShapeFeatures computeShapeFeatures(const std::vector<Point> &points) const {
 
     ShapeFeatures features;
     features.point_count = points.size();
@@ -126,17 +121,7 @@ public:
       features.linearity = 0.0;
     }
 
-    // 7. 计算圆形度（基于圆形拟合）
-    auto circle_fit = circle_fitter.fitCircle(points);
-    double angular_coverage = computeAngularCoverage(points, features.center);
-
-    // 圆形度综合评分
-    double fit_score = std::exp(-circle_fit.fit_error / 0.02);
-    double inlier_score = circle_fit.inlier_ratio;
-    double coverage_score = angular_coverage / (2 * M_PI);
-
-    features.circularity =
-        0.4 * fit_score + 0.4 * inlier_score + 0.2 * coverage_score;
+    features.circularity = 0.0;
 
     return features;
   }
@@ -148,8 +133,7 @@ public:
    * @param circle_fit 圆拟合结果
    * @return ObjectType 物体类型
    */
-  ObjectType classifyObject(const ShapeFeatures &features,
-                            const CircleFitResult &circle_fit) const {
+  ObjectType classifyObject(const ShapeFeatures &features) const {
 
     // 规则4: 点数过少 → 噪声
     if (features.point_count < 13) {
@@ -157,8 +141,7 @@ public:
     }
 
     // 规则1: 圆形度高 → 反光柱
-    if (features.circularity >= params_.min_circularity_for_post &&
-        features.elongation <= params_.max_elongation_for_post &&
+    if (features.elongation <= params_.max_elongation_for_post &&
         features.linearity <= params_.max_linearity_for_post) {
       // 规则5： 近距离聚类数目要大于20个点且线性度要高 否则为噪声
       if(features.center.distanceFromOrigin() < 1.30) {
@@ -171,16 +154,15 @@ public:
 
     // 规则2: 延伸度大 + 线性度高 → 反光板
     if (features.elongation >= params_.min_elongation_for_board &&
-        features.linearity >= params_.min_linearity_for_board &&
-        features.circularity <= params_.min_circularity_for_board) {
+        features.linearity >= params_.min_linearity_for_board) {
       return REFLECTOR_BOARD;
     }
 
     // 规则3: 圆形度低 + 拟合误差大 → 噪声
-    if (features.circularity <= params_.max_circularity_for_noise &&
-        circle_fit.fit_error >= params_.max_fit_error_for_noise) {
-      return CLUSTER_NOISE;
-    }
+    // if (features.circularity <= params_.max_circularity_for_noise &&
+    //     circle_fit.fit_error >= params_.max_fit_error_for_noise) {
+    //   return CLUSTER_NOISE;
+    // }
 
     return OBJECT_UNKNOWN;
   }

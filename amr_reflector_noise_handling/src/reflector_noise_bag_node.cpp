@@ -879,8 +879,6 @@ private:
     pca_params.min_elongation_for_board = 12.0;
     pca_params.min_linearity_for_board = 0.93;
     pca_params.max_linearity_for_post = 0.97;
-    pca_params.min_circularity_for_post = 0.64;
-    pca_params.min_circularity_for_board = 0.46;
     pca_classifier_.setParams(pca_params);
 
     // Configure geometric validator
@@ -1221,12 +1219,12 @@ private:
 
       if (classification_method_ == "pca") {
         auto pca_features =
-            pca_classifier_.computeShapeFeatures(cluster, circle_fitter_);
+            pca_classifier_.computeShapeFeatures(cluster);
         auto circle_fit_temp = circle_fitter_.fitCircle(cluster);
         // 分别根据pca信息和拟合圆信息判别是直线，还是圆弧，以及噪声
         // 噪声检测基本失败
         auto object_type =
-            pca_classifier_.classifyObject(pca_features, circle_fit_temp);
+            pca_classifier_.classifyObject(pca_features);
 
         is_reflector_candidate = (object_type == REFLECTOR_POST);
 

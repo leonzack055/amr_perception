@@ -99,7 +99,7 @@ reflector_noise_handling:
     global_tracking:
       # === 数据关联参数 ===
       # 匹配距离阈值（已确认反光柱，米）
-      match_distance_threshold: 0.3
+      match_distance_threshold: 0.2
       
       # 匹配距离阈值（非活跃反光柱，米）- 更宽松以允许重新匹配
       match_distance_inactive: 0.5
