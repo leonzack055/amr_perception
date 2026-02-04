@@ -34,6 +34,8 @@
 #include "amr_reflector_noise_handling/types.hpp"
 #include "amr_reflector_noise_handling/types/msg_conversion.hpp"
 #include "amr_reflector_noise_handling/types/reflector_common.hpp"
+#include "amr_reflector_noise_handling/common/time_order_queue.hpp"
+#include "amr_reflector_noise_handling/distort_corrector.hpp"
 #include <termios.h> // 终端控制头文件
 #include <unistd.h>  // STDIN_FILENO
 
@@ -53,380 +55,6 @@ char get_char_without_enter() {
   return c;
 }
 
-// 位姿点结构体（带时间戳）
-struct PosePoint {
-  double timestamp;         // 时间戳（秒）
-  transforms::Rigid3d pose; // 位姿（x,y,z,quat）
-
-  // 按时间戳排序
-  bool operator<(const PosePoint &other) const {
-    return timestamp < other.timestamp;
-  }
-};
-
-// 三次样条类（单维度，支持多边界条件）
-class CubicSpline1D {
-public:
-  // 边界条件类型
-  enum class BoundaryType {
-    NATURAL, // 自然样条：两端二阶导数=0
-    CLAMPED, // 夹紧样条：指定两端一阶导数（速度），两个端点的速度
-    PERIODIC // 周期样条：两端一阶/二阶导数连续（闭环轨迹）
-  };
-
-  // 构造函数：输入时间戳、采样值、边界条件
-  CubicSpline1D(const std::vector<double> &ts, const std::vector<double> &ys,
-                BoundaryType bc_type = BoundaryType::NATURAL,
-                double dy0 = 0.0, // 夹紧样条：t0处的一阶导数（速度）
-                double dyn = 0.0) // 夹紧样条：tn处的一阶导数（速度）
-  {
-    if (ts.size() != ys.size() || ts.size() < 2) {
-      throw std::runtime_error(
-          "采样点数量不足（至少2个）或时间戳/值长度不匹配");
-    }
-
-    // 保存时间戳和采样值（已排序）
-    ts_ = ts;
-    ys_ = ys;
-    n_ = ts.size() - 1; // 分段数 = 采样点数 - 1
-
-    // 计算相邻时间戳的间隔 h
-    hs_.resize(n_);
-    for (int i = 0; i < n_; ++i) {
-      hs_[i] = ts_[i + 1] - ts_[i];
-      if (hs_[i] <= 1e-6) {
-        throw std::runtime_error("时间戳重复或间隔过小");
-      }
-    }
-
-    // 求解二阶导数（m）：核心三对角方程组
-    solve_second_derivatives(bc_type, dy0, dyn);
-
-    // 预计算分段多项式的系数（a,b,c,d）：S_i(t) = a_i + b_i*(t-ti) +
-    // c_i*(t-ti)^2 + d_i*(t-ti)^3
-    compute_polynomial_coefficients();
-  }
-
-  // 插值任意时间戳的数值
-  double interpolate(double t) const {
-    // 找到t所在的分段区间
-    int idx = find_segment_index(t);
-    if (idx < 0)
-      return ys_.front(); // t < t0，返回第一个值
-    if (idx >= n_)
-      return ys_.back(); // t > tn，返回最后一个值
-
-    double dt = t - ts_[idx];
-    // 分段三次多项式：S_i(t) = a + b*dt + c*dt² + d*dt³
-    const auto &coeff = coeffs_[idx];
-    return coeff.a + coeff.b * dt + coeff.c * dt * dt + coeff.d * dt * dt * dt;
-  }
-
-  // 插值一阶导数（速度）
-  double derivative1(double t) const {
-    int idx = find_segment_index(t);
-    if (idx < 0 || idx >= n_)
-      return 0.0;
-
-    double dt = t - ts_[idx];
-    const auto &coeff = coeffs_[idx];
-    return coeff.b + 2 * coeff.c * dt + 3 * coeff.d * dt * dt;
-  }
-
-  // 插值二阶导数（加速度）
-  double derivative2(double t) const {
-    int idx = find_segment_index(t);
-    if (idx < 0 || idx >= n_)
-      return 0.0;
-
-    const auto &coeff = coeffs_[idx];
-    return 2 * coeff.c + 6 * coeff.d * (t - ts_[idx]);
-  }
-
-private:
-  // 分段多项式系数
-  struct Coeff {
-    double a, b, c, d;
-  };
-
-  std::vector<double> ts_;    // 时间戳
-  std::vector<double> ys_;    // 采样值
-  int n_;                     // 分段数
-  std::vector<double> hs_;    // 相邻时间戳间隔 h_i = t_{i+1} - t_i
-  std::vector<double> ms_;    // 二阶导数 m_i = S''(t_i)
-  std::vector<Coeff> coeffs_; // 分段多项式系数
-
-  // 找到t所在的分段索引
-  int find_segment_index(double t) const {
-    if (t <= ts_[0])
-      return -1;
-    if (t >= ts_.back())
-      return n_;
-
-    // 二分查找（高效）
-    int left = 0, right = n_;
-    while (left < right) {
-      int mid = (left + right) / 2;
-      if (ts_[mid + 1] > t) {
-        right = mid;
-      } else {
-        left = mid + 1;
-      }
-    }
-    return left;
-  }
-
-  // 求解二阶导数m（核心：三对角方程组）
-  void solve_second_derivatives(BoundaryType bc_type, double dy0, double dyn) {
-    ms_.resize(ts_.size(), 0.0);
-    std::vector<double> a(n_, 0.0), b(n_ + 1, 0.0), c(n_, 0.0), d(n_ + 1, 0.0);
-
-    // 构建三对角方程组：A*m = d
-    for (int i = 1; i < n_; ++i) {
-      a[i - 1] = hs_[i - 1];
-      b[i] = 2 * (hs_[i - 1] + hs_[i]);
-      c[i] = hs_[i];
-      d[i] = 6 * ((ys_[i + 1] - ys_[i]) / hs_[i] -
-                  (ys_[i] - ys_[i - 1]) / hs_[i - 1]);
-    }
-
-    // 应用边界条件
-    switch (bc_type) {
-    case BoundaryType::NATURAL: {
-      // 自然样条：m0=0, mn=0
-      b[0] = 1.0;
-      c[0] = 0.0;
-      d[0] = 0.0;
-      b[n_] = 1.0;
-      a[n_ - 1] = 0.0;
-      d[n_] = 0.0;
-      break;
-    }
-    case BoundaryType::CLAMPED: {
-      // 夹紧样条：指定m0和mn的约束（由一阶导数推导）
-      b[0] = 2 * hs_[0];
-      c[0] = hs_[0];
-      d[0] = 6 * ((ys_[1] - ys_[0]) / hs_[0] - dy0);
-
-      b[n_] = 2 * hs_[n_ - 1];
-      a[n_ - 1] = hs_[n_ - 1];
-      d[n_] = 6 * (dyn - (ys_[n_] - ys_[n_ - 1]) / hs_[n_ - 1]);
-      break;
-    }
-    case BoundaryType::PERIODIC: {
-      // 周期样条：m0=mn，S'(t0)=S'(tn)，S''(t0)=S''(tn)
-      // 重构方程组（简化版，仅适配周期场景）
-      b[0] = 2 * (hs_[0] + hs_[n_ - 1]);
-      c[0] = hs_[0];
-      a[0] = hs_[n_ - 1];
-      d[0] = 6 * ((ys_[1] - ys_[0]) / hs_[0] -
-                  (ys_[n_] - ys_[n_ - 1]) / hs_[n_ - 1]);
-
-      for (int i = 1; i < n_; ++i) {
-        a[i] = hs_[i - 1];
-        b[i] = 2 * (hs_[i - 1] + hs_[i]);
-        c[i] = hs_[i];
-        d[i] = 6 * ((ys_[i + 1] - ys_[i]) / hs_[i] -
-                    (ys_[i] - ys_[i - 1]) / hs_[i - 1]);
-      }
-      // 手动设置m0=mn
-      ms_[0] = ms_[n_];
-      break;
-    }
-    }
-
-    // 托马斯算法（追赶法）求解三对角方程组
-    thomas_algorithm(a, b, c, d, ms_);
-  }
-
-  // 托马斯算法：求解三对角方程组 A*x = b
-  void thomas_algorithm(const std::vector<double> &a,
-                        const std::vector<double> &b,
-                        const std::vector<double> &c,
-                        const std::vector<double> &d, std::vector<double> &x) {
-    int n = x.size();
-    std::vector<double> c_prime(n, 0.0), d_prime(n, 0.0);
-
-    // 前向消去
-    c_prime[0] = c[0] / b[0];
-    d_prime[0] = d[0] / b[0];
-    for (int i = 1; i < n; ++i) {
-      double temp = b[i] - a[i - 1] * c_prime[i - 1];
-      c_prime[i] = c[i] / temp;
-      d_prime[i] = (d[i] - a[i - 1] * d_prime[i - 1]) / temp;
-    }
-
-    // 反向回代
-    x[n - 1] = d_prime[n - 1];
-    for (int i = n - 2; i >= 0; --i) {
-      x[i] = d_prime[i] - c_prime[i] * x[i + 1];
-    }
-
-    // 周期样条补充：m0=mn
-    // if (bc_type == BoundaryType::PERIODIC) {
-    //   x[0] = x[n - 1];
-    // }
-  }
-
-  // 计算分段多项式系数
-  void compute_polynomial_coefficients() {
-    coeffs_.resize(n_);
-    for (int i = 0; i < n_; ++i) {
-      double h = hs_[i];
-      coeffs_[i].a = ys_[i];
-      coeffs_[i].b =
-          (ys_[i + 1] - ys_[i]) / h - h * (ms_[i + 1] + 2 * ms_[i]) / 6;
-      coeffs_[i].c = ms_[i] / 2;
-      coeffs_[i].d = (ms_[i + 1] - ms_[i]) / (6 * h);
-    }
-  }
-};
-
-class PoseCubicSpline {
-public:
-  // 构造函数：输入位姿采样点 + 位置边界条件
-  PoseCubicSpline(const std::vector<PosePoint> &pose_points,
-                  CubicSpline1D::BoundaryType pos_bc_type =
-                      CubicSpline1D::BoundaryType::NATURAL,
-                  double vx0 = 0.0,
-                  double vxn = 0.0, // x轴初始/结束速度（夹紧样条用）
-                  double vy0 = 0.0, double vyn = 0.0, // y轴初始/结束速度
-                  double vz0 = 0.0, double vzn = 0.0) // z轴初始/结束速度
-  {
-    // 1. 预处理：时间戳排序+去重
-    std::vector<PosePoint> sorted_poses = pose_points;
-    std::sort(sorted_poses.begin(), sorted_poses.end());
-    auto last = std::unique(sorted_poses.begin(), sorted_poses.end(),
-                            [](const PosePoint &a, const PosePoint &b) {
-                              return fabs(a.timestamp - b.timestamp) < 1e-6;
-                            });
-    sorted_poses.erase(last, sorted_poses.end());
-
-    if (sorted_poses.size() < 2) {
-      throw std::runtime_error("位姿采样点数量不足（至少2个）");
-    }
-
-    // 2. 提取各维度数据
-    std::vector<double> ts, xs, ys, zs;
-    std::vector<Eigen::Quaterniond> quats;
-    for (const auto &p : sorted_poses) {
-      ts.push_back(p.timestamp);
-      xs.push_back(p.pose.translation().x());
-      ys.push_back(p.pose.translation().y());
-      zs.push_back(p.pose.translation().z());
-      quats.push_back(p.pose.rotation().normalized());
-    }
-
-    // 3. 位置拟合（x/y/z分别用三次样条）
-    spline_x_ = std::make_unique<CubicSpline1D>(ts, xs, pos_bc_type, vx0, vxn);
-    spline_y_ = std::make_unique<CubicSpline1D>(ts, ys, pos_bc_type, vy0, vyn);
-    spline_z_ = std::make_unique<CubicSpline1D>(ts, zs, pos_bc_type, vz0, vzn);
-
-    // 4. 姿态拟合：偏航角用周期三次样条，四元数用SQUAD
-    // 保存四元数和时间戳（SQUAD插值用）
-    ts_ = ts;
-    quats_ = quats;
-  }
-
-  // 插值任意时间戳的位姿
-  PosePoint interpolate(double t) const {
-    PosePoint res;
-    res.timestamp = t;
-
-    // 1. 位置插值（三次样条）
-    double x = spline_x_->interpolate(t);
-    double y = spline_y_->interpolate(t);
-    double z = spline_z_->interpolate(t);
-
-    // 2. 四元数插值（SQUAD，C1连续）
-    Eigen::Quaterniond quat = interpolate_quaternion_squad(t);
-    res.pose = transforms::Rigid3d(Eigen::Vector3d(x, y, z), quat);
-    return res;
-  }
-
-private:
-  // 位置三次样条
-  std::unique_ptr<CubicSpline1D> spline_x_;
-  std::unique_ptr<CubicSpline1D> spline_y_;
-  std::unique_ptr<CubicSpline1D> spline_z_;
-
-  // 四元数插值相关
-  std::vector<double> ts_;
-  std::vector<Eigen::Quaterniond> quats_;
-
-  // SQUAD插值四元数（C1连续）
-  Eigen::Quaterniond interpolate_quaternion_squad(double t) const {
-    // 找到t所在区间
-    int idx = find_segment_index(t);
-    if (idx < 0)
-      return quats_.front();
-    if (idx >= (int)ts_.size() - 1)
-      return quats_.back();
-
-    int i0 = idx;
-    int i1 = idx + 1;
-    int i_prev = (i0 == 0) ? ts_.size() - 2 : i0 - 1; // 前一个点（周期处理）
-    int i_next = (i1 == (int)ts_.size() - 1) ? 1 : i1 + 1; // 后一个点
-
-    double t0 = ts_[i0];
-    double t1 = ts_[i1];
-    double s = (t - t0) / (t1 - t0);
-
-    // 计算SQUAD中间控制点
-    Eigen::Quaterniond a =
-        squad_intermediate(quats_[i_prev], quats_[i0], quats_[i1]);
-    Eigen::Quaterniond b =
-        squad_intermediate(quats_[i0], quats_[i1], quats_[i_next]);
-
-    // SQUAD插值
-    return squad(quats_[i0], quats_[i1], a, b, s);
-  }
-
-  // SQUAD中间控制点计算
-  Eigen::Quaterniond
-  squad_intermediate(const Eigen::Quaterniond &q_prev,
-                     const Eigen::Quaterniond &q_curr,
-                     const Eigen::Quaterniond &q_next) const {
-    Eigen::Quaterniond q_inv = q_curr.inverse();
-    return q_curr * ((q_inv * q_next).slerp(0.5, q_inv * q_prev)).normalized();
-  }
-
-  // SQUAD核心插值
-  Eigen::Quaterniond squad(const Eigen::Quaterniond &q0,
-                           const Eigen::Quaterniond &q1,
-                           const Eigen::Quaterniond &a,
-                           const Eigen::Quaterniond &b, double t) const {
-    double t2 = t * t;
-    double t3 = t2 * t;
-    double s = 2 * t3 - 3 * t2 + 1;
-    double v = t3 - 2 * t2 + t;
-    double w = t3 - t2;
-    double u = -2 * t3 + 3 * t2;
-
-    Eigen::Quaterniond q_slerp1 = q0.slerp(t, q1);
-    Eigen::Quaterniond q_slerp2 = a.slerp(t, b);
-    return q_slerp1.slerp(2 * t * (1 - t), q_slerp2).normalized();
-  }
-
-  // 找时间戳分段索引
-  int find_segment_index(double t) const {
-    if (t <= ts_[0])
-      return -1;
-    if (t >= ts_.back())
-      return (int)ts_.size() - 1;
-
-    int left = 0, right = (int)ts_.size() - 1;
-    while (left < right) {
-      int mid = (left + right) / 2;
-      if (ts_[mid + 1] > t) {
-        right = mid;
-      } else {
-        left = mid + 1;
-      }
-    }
-    return left;
-  }
-};
 
 /**
  * @brief Frame data structure for storing scan and odometry information
@@ -435,6 +63,7 @@ struct FrameData {
   sensor_msgs::msg::LaserScan::SharedPtr scan;
   int64_t timestamp; // nanoseconds
   std::vector<int64_t> between_next_odoms;
+  std::vector<TimeRigid3d> between_odoms;
   size_t odom_count;
   size_t frame_index; // laserscan的索引
 
@@ -560,13 +189,15 @@ public:
     int gt_cnt = 0;
     for (const auto &odom_timestamp : laser_frame->between_next_odoms) {
       if (laser_frame->timestamp < odom_timestamp)
-        less_cnt++;
-      else
         gt_cnt++;
+      else
+        less_cnt++;
     }
     std::cerr << "当前laser的消息传递前后里程计消息数量: "
               << laser_frame->between_next_odoms.size() << "负轴：" << less_cnt
               << " 个；正轴: " << gt_cnt << "个" << std::endl;
+    std::cerr << "双拍提取到的里程计消息数量: " << laser_frame->between_odoms.size();
+
     // 3. 对于laser帧前后两个里程数据进行插值
     PoseCubicSpline odom_spline(odom_poses);
     // 4. 计算当前扫描点的里程计位姿
@@ -947,6 +578,7 @@ private:
           assert(last_odom_stamp <
                  rclcpp::Time(odom->header.stamp).nanoseconds());
           last_odom_stamp = rclcpp::Time(odom->header.stamp).nanoseconds();
+          odom_queue_.push(TimeRigid3d(transforms::ToRigid3d(odom->pose.pose), last_odom_stamp));
         } else {
           RCLCPP_ERROR_STREAM(this->get_logger(),
                               "读取odom消息: "
@@ -1054,6 +686,36 @@ private:
                     frames_.size(), frame->between_next_odoms.size());
       }
     }
+    
+
+    // 激光时间片间队列双拍提取
+    frame_idx = 0;
+    for (std::vector<int64_t>::const_iterator scan_iterator =
+             scan_timestamps_.cbegin();
+         scan_iterator < scan_timestamps_.cend() - 1; ++scan_iterator) {
+      const auto &next_scan_iterator = scan_iterator + 1;
+      const auto &scan_time = *scan_iterator;
+      const auto &next_scan_time = *next_scan_iterator;
+      auto frame = std::make_shared<FrameData>();
+      // Find closest odometry
+      auto before_vec = odom_queue_.popBefore(scan_time);
+      auto after_vec = odom_queue_.getRange(scan_time, next_scan_time);
+      for(const auto& odom : before_vec) {
+        frames_[frame_idx]->between_odoms.emplace_back(odom);
+      }
+      for (const auto &odom : after_vec) {
+        frames_[frame_idx]->between_odoms.emplace_back(odom);
+      }
+      // 打印双拍提取信息
+      RCLCPP_INFO(this->get_logger(),
+                  "[-]激光雷达第 %d帧, 使用的里程计数据: %ld帧, 双拍提取数据: "
+                  "%ld帧, before_vec: %ld, after_vec: %ld",
+                  frame_idx, frames_[frame_idx]->between_next_odoms.size(),
+                  frames_[frame_idx]->between_odoms.size(), 
+                  before_vec.size(), after_vec.size());
+      frame_idx++;
+    }
+    // 补偿最后一帧激光雷达的数据丢弃，队列中始终有一帧数据
     return !frames_.empty();
   }
 
@@ -1414,7 +1076,8 @@ private:
       switch (key) {
       case 'n':
       case 'N':
-        if (current_frame_index_ < frames_.size() - 1) {
+        // 只考虑{N-1}帧由于双拍缓存，最帧{0,1,...N-2}序列
+        if (current_frame_index_ < frames_.size() - 2) {
           processFrame(current_frame_index_ + 1);
         } else {
           RCLCPP_WARN(this->get_logger(), "已是最后一帧");
@@ -2056,6 +1719,7 @@ private:
       scan_map_; // Map of scan messages by timestamp
   std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr> odom_map_;
   std::vector<int64_t> odom_timestamps_; // Vector of frames
+  TimeOrderQueue<transforms::Rigid3d> odom_queue_;
   std::vector<int64_t> scan_timestamps_;
 
   // Frame data

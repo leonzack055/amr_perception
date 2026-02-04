@@ -417,7 +417,7 @@ private:
  * 3： 只针对laser帧前后的数据进行拟合；必须过数据点
  * 4： 时间片内拟合； 不关心整体连续性；
  */
-class DistortionCorrector {
+class CublicDistortionCorrector {
 public:
   /**
    * @brief Correct point cloud distortion using odometry between frames
