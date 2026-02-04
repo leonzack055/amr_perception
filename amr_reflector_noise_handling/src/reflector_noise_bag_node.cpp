@@ -921,6 +921,7 @@ private:
         auto scan = std::make_shared<sensor_msgs::msg::LaserScan>();
         rclcpp::Serialization<sensor_msgs::msg::LaserScan> serialization;
         laser_scan_serializer.deserialize_message(&serialized_msg, scan.get());
+        scan->header.stamp = rclcpp::Time(msg->time_stamp);
         if (scan_map_.find(rclcpp::Time(msg->time_stamp).nanoseconds()) ==
             scan_map_.end()) {
           scan_map_[rclcpp::Time(msg->time_stamp).nanoseconds()] = scan;
@@ -937,6 +938,7 @@ private:
       } else if (msg->topic_name == odom_topic_) {
         auto odom = std::make_shared<nav_msgs::msg::Odometry>();
         odom_serializer.deserialize_message(&serialized_msg, odom.get());
+        odom->header.stamp = rclcpp::Time(msg->time_stamp);
         if (odom_map_.find(rclcpp::Time(odom->header.stamp).nanoseconds()) ==
             odom_map_.end()) {
           odom_map_[rclcpp::Time(odom->header.stamp).nanoseconds()] = odom;
@@ -1073,6 +1075,7 @@ private:
     // 使用扭曲补偿
     frame->compensated_points = DistortionCorrector::correctDistortion(
         frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
+    // frame->compensated_points = convertScanToPoints(frame->scan);
 
     // Update global pose tracker
     // INFO:
@@ -1156,7 +1159,7 @@ private:
                 confirmed_reflectors.size());
 
     // Visualization data is ready, will be published by timer
-    for(auto &reflector : confirmed_reflectors) {
+    for (auto &reflector : confirmed_reflectors) {
       auto local_postion = frame->global_pose.inverse() *
                            Eigen::Vector3d(reflector.global_position.x,
                                            reflector.global_position.y, 0.0);
@@ -1218,13 +1221,11 @@ private:
       bool is_reflector_candidate = false;
 
       if (classification_method_ == "pca") {
-        auto pca_features =
-            pca_classifier_.computeShapeFeatures(cluster);
+        auto pca_features = pca_classifier_.computeShapeFeatures(cluster);
         auto circle_fit_temp = circle_fitter_.fitCircle(cluster);
         // 分别根据pca信息和拟合圆信息判别是直线，还是圆弧，以及噪声
         // 噪声检测基本失败
-        auto object_type =
-            pca_classifier_.classifyObject(pca_features);
+        auto object_type = pca_classifier_.classifyObject(pca_features);
 
         is_reflector_candidate = (object_type == REFLECTOR_POST);
 
@@ -1331,7 +1332,8 @@ private:
   }
 
   /**
-   * @brief 计算检测到的Reflectors与跟踪器输出的Confirm之间的结果，来给出确认的检测值
+   * @brief
+   * 计算检测到的Reflectors与跟踪器输出的Confirm之间的结果，来给出确认的检测值
    */
   std::vector<DetectedReflector> confirmDetetedReflectors(
       const std::vector<DetectedReflector> &reflectors,
