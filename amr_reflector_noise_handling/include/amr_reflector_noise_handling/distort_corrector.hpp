@@ -425,14 +425,20 @@ public:
    * @param odom_queue: 里程计队列，它为扫描点云时间片起止前后的里程计位姿
    * @param laser_to_base： 激光雷达到base的位姿，往往是静态TF发布的结果
    */
-  static std::vector<TimePoint>
+  static std::vector<Point>
   correctDistortion(std::vector<TimePoint> &scan_points,
                     const std::vector<TimeRigid3d> &odom_queue,
-                    const transforms::Rigid3d &laser_to_base) {
+                    const transforms::Rigid3d &laser_to_base,
+                    int64_t scan_start, transforms::Rigid3d &laser_pose_in_odom) {
     if (odom_queue.empty()) {
-      return scan_points;
+      std::vector<Point> points;
+      points.reserve(scan_points.size());
+      for (const auto &timePoint : scan_points) {
+        points.push_back(timePoint);
+      }
+      return points;
     }
-    std::vector<TimePoint> corrected_points;
+    std::vector<Point> corrected_points;
     corrected_points.reserve(scan_points.size());
 
     // 1. 获取laser帧前后两个里程数据
@@ -445,21 +451,25 @@ public:
     }
     // 2. 对于laser帧前后两个里程C-Spline曲线拟合
     PoseCubicSpline odom_spline(odom_poses);
-    transforms::Rigid3d laser_pose =
-        odom_spline.interpolate(scan_points.front().timestamp * 1e-9).pose * laser_to_base;
-        // 3. 计算每个点在短时里程计下的全局坐标
-        for (size_t i = 0; i < scan_points.size(); ++i) {
+    // TODO: 测试scan_points.front()与header.stamp的里程计位姿
+    // 激光雷达在里程计下的全局坐标位姿
+    auto global_base_pose = odom_spline.interpolate(scan_start * 1e-9);
+    // 激光雷达在里程计下的全局坐标位姿
+    laser_pose_in_odom = global_base_pose.pose * laser_to_base;
+    // 3. 计算每个点在短时里程计下的全局坐标
+    for (size_t i = 0; i < scan_points.size(); ++i) {
       // 计算相对于laser的点云
       TimePoint point = scan_points[i];
       double point_stamp = point.timestamp * 1e-9;
       PosePoint stamp_odom = odom_spline.interpolate(point_stamp);
-      auto corrected_laser_point = laser_pose.inverse() * stamp_odom.pose *
-                                   laser_to_base *
+      auto corrected_laser_point = laser_pose_in_odom.inverse() *
+                                   stamp_odom.pose * laser_to_base *
                                    Eigen::Vector3d(point.x, point.y, 0.0);
       TimePoint corrected_point;
       corrected_point = point;
       corrected_point.x = corrected_laser_point.x();
       corrected_point.y = corrected_laser_point.y();
+      corrected_point.origin_index = i;
       corrected_points.push_back(corrected_point);
     }
     return corrected_points;

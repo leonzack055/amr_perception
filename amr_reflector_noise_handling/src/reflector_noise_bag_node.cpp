@@ -23,6 +23,8 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "amr_reflector_noise_handling/circle_fitter.hpp"
+#include "amr_reflector_noise_handling/common/time_order_queue.hpp"
+#include "amr_reflector_noise_handling/distort_corrector.hpp"
 #include "amr_reflector_noise_handling/fixed_dbscan.hpp"
 #include "amr_reflector_noise_handling/fractal_dimension.hpp"
 #include "amr_reflector_noise_handling/geometric_validator.hpp"
@@ -34,8 +36,6 @@
 #include "amr_reflector_noise_handling/types.hpp"
 #include "amr_reflector_noise_handling/types/msg_conversion.hpp"
 #include "amr_reflector_noise_handling/types/reflector_common.hpp"
-#include "amr_reflector_noise_handling/common/time_order_queue.hpp"
-#include "amr_reflector_noise_handling/distort_corrector.hpp"
 #include <termios.h> // 终端控制头文件
 #include <unistd.h>  // STDIN_FILENO
 
@@ -54,7 +54,6 @@ char get_char_without_enter() {
   tcsetattr(STDIN_FILENO, TCSANOW, &old_attr); // 恢复原有终端属性（必做！）
   return c;
 }
-
 
 /**
  * @brief Frame data structure for storing scan and odometry information
@@ -141,174 +140,6 @@ private:
   std::vector<transforms::Rigid3d> trajectory_;
 };
 
-/**
- * @brief Point cloud distortion correction using odometry
- *  * 尝试使用laser时间片内的里程数据进行样条曲线拟合
- *  *
- * 矫正点云过程，同时更新laser扫描时刻激光雷达点云，以及激光雷达在里程计下的全局位姿
- * 1： xyz
- * 使用CSplines，但这并不是最好，因为它不能处理旋转；对于差速轮模型，由于其是非完全模型；其平面速度方向，应该与朝向一致；
- * 2： 对于旋转使用Squad进行角速度不变平滑；
- * 3： 只针对laser帧前后的数据进行拟合；必须过数据点
- * 4： 时间片内拟合； 不关心整体连续性；
- */
-class DistortionCorrector {
-public:
-  /**
-   * @brief Correct point cloud distortion using odometry between frames
-   */
-  static std::vector<Point> correctDistortion(
-      std::shared_ptr<FrameData> &laser_frame,
-      const std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr>
-          &odom_queue,
-      const transforms::Rigid3d &laser_to_base) {
-    if (laser_frame->between_next_odoms.empty()) {
-      std::cerr << "当前laser的消息传递的消息为空" << std::endl;
-      return convertScanToPoints(laser_frame->scan);
-    }
-
-    std::vector<Point> corrected_points;
-    corrected_points.reserve(laser_frame->scan->ranges.size());
-
-    // Convert scan to points first
-    auto original_points = convertScanToPoints(laser_frame->scan);
-    // 1. 获取laser帧前后两个里程数据
-    std::vector<PosePoint> odom_poses(laser_frame->between_next_odoms.size());
-    for (const auto odom_stamp : laser_frame->between_next_odoms) {
-      PosePoint tmp_pose;
-      tmp_pose.pose =
-          transforms::ToRigid3d(odom_queue.at(odom_stamp)->pose.pose);
-      tmp_pose.timestamp = odom_stamp * 1e-9;
-      odom_poses.emplace_back(tmp_pose);
-    }
-    // 2. 统计各点的里程计时间戳
-    // TODO: 当前激光雷达的原始数据并不准确；
-    // 扫描事件为时间片为0；只能以time_increment进行计算
-    std::vector<double> point_timestamps(original_points.size());
-    int less_cnt = 0;
-    int gt_cnt = 0;
-    for (const auto &odom_timestamp : laser_frame->between_next_odoms) {
-      if (laser_frame->timestamp < odom_timestamp)
-        gt_cnt++;
-      else
-        less_cnt++;
-    }
-    std::cerr << "当前laser的消息传递前后里程计消息数量: "
-              << laser_frame->between_next_odoms.size() << "负轴：" << less_cnt
-              << " 个；正轴: " << gt_cnt << "个" << std::endl;
-    std::cerr << "双拍提取到的里程计消息数量: " << laser_frame->between_odoms.size();
-
-    // 3. 对于laser帧前后两个里程数据进行插值
-    PoseCubicSpline odom_spline(odom_poses);
-    // 4. 计算当前扫描点的里程计位姿
-    auto global_base_pose =
-        odom_spline.interpolate(laser_frame->timestamp * 1e-9);
-    // 激光雷达在里程计下的全局坐标位姿
-    laser_frame->global_pose = global_base_pose.pose * laser_to_base;
-    // 5. 计算每个点在短时里程计下的全局坐标
-    int index = 0;
-    for (size_t i = 0; i < laser_frame->scan->ranges.size(); ++i) {
-      // 跳过无效点
-      if (laser_frame->scan->ranges[i] < laser_frame->scan->range_min ||
-          laser_frame->scan->ranges[i] > laser_frame->scan->range_max ||
-          !std::isfinite(laser_frame->scan->ranges[i])) {
-        continue;
-      }
-      // 计算相对于laser的点云
-      Point point;
-      double angle =
-          laser_frame->scan->angle_min + i * laser_frame->scan->angle_increment;
-      double range = laser_frame->scan->ranges[i];
-      point.x = range * std::cos(angle);
-      point.y = range * std::sin(angle);
-      if (i < laser_frame->scan->intensities.size()) {
-        point.intensity = laser_frame->scan->intensities[i];
-      } else {
-        point.intensity = 0.0;
-      }
-      double point_stamp =
-          laser_frame->timestamp * 1e-9 + i * laser_frame->scan->time_increment;
-      PosePoint stamp_odom = odom_spline.interpolate(point_stamp);
-      auto corrected_laser_point = laser_frame->global_pose.inverse() *
-                                   stamp_odom.pose * laser_to_base *
-                                   Eigen::Vector3d(point.x, point.y, 0.0);
-      // Interpolate odometry
-      // auto interpolated_odom = interpolateOdometry(odom_start, odom_end,
-      // alpha);
-
-      // Transform point to world frame using interpolated odometry
-      // Point corrected =
-      //     transformPointToWorld(original_points[i], interpolated_odom);
-      Point corrected_point;
-      corrected_point.x = corrected_laser_point.x();
-      corrected_point.y = corrected_laser_point.y();
-      if (i < laser_frame->scan->intensities.size()) {
-        corrected_point.intensity = laser_frame->scan->intensities[i];
-      } else {
-        corrected_point.intensity = 0.0;
-      }
-      corrected_point.origin_index = index++;
-      corrected_points.push_back(corrected_point);
-    }
-    return corrected_points;
-  }
-
-private:
-  /**
-   * @brief Convert laser scan to points
-   */
-  static std::vector<Point>
-  convertScanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
-    std::vector<Point> points;
-
-    for (size_t i = 0; i < scan_msg->ranges.size(); ++i) {
-      if (scan_msg->ranges[i] < scan_msg->range_min ||
-          scan_msg->ranges[i] > scan_msg->range_max ||
-          !std::isfinite(scan_msg->ranges[i])) {
-        continue;
-      }
-
-      double angle = scan_msg->angle_min + i * scan_msg->angle_increment;
-      double range = scan_msg->ranges[i];
-
-      Point point;
-      point.x = range * std::cos(angle);
-      point.y = range * std::sin(angle);
-
-      if (i < scan_msg->intensities.size()) {
-        point.intensity = scan_msg->intensities[i];
-      } else {
-        point.intensity = 0.0;
-      }
-
-      points.push_back(point);
-    }
-
-    return points;
-  }
-
-  /**
-   * @brief Transform point from laser frame to world frame
-   */
-  static Point
-  transformPointToWorld(const Point &point,
-                        const geometry_msgs::msg::Pose &odom_pose) {
-    Point world_point;
-
-    // Rotate point by odometry orientation
-    tf2::Quaternion q;
-    tf2::fromMsg(odom_pose.orientation, q);
-    tf2::Vector3 v(point.x, point.y, 0);
-    tf2::Vector3 rotated = tf2::quatRotate(q, v);
-
-    // Translate by odometry position
-    world_point.x = rotated.x() + odom_pose.position.x;
-    world_point.y = rotated.y() + odom_pose.position.y;
-    world_point.intensity = point.intensity;
-
-    return world_point;
-  }
-};
 
 /**
  * @brief Interactive bag processing node
@@ -578,7 +409,8 @@ private:
           assert(last_odom_stamp <
                  rclcpp::Time(odom->header.stamp).nanoseconds());
           last_odom_stamp = rclcpp::Time(odom->header.stamp).nanoseconds();
-          odom_queue_.push(TimeRigid3d(transforms::ToRigid3d(odom->pose.pose), last_odom_stamp));
+          odom_queue_.push(TimeRigid3d(transforms::ToRigid3d(odom->pose.pose),
+                                       last_odom_stamp));
         } else {
           RCLCPP_ERROR_STREAM(this->get_logger(),
                               "读取odom消息: "
@@ -686,7 +518,6 @@ private:
                     frames_.size(), frame->between_next_odoms.size());
       }
     }
-    
 
     // 激光时间片间队列双拍提取
     frame_idx = 0;
@@ -700,19 +531,20 @@ private:
       // Find closest odometry
       auto before_vec = odom_queue_.popBefore(scan_time);
       auto after_vec = odom_queue_.getRange(scan_time, next_scan_time);
-      for(const auto& odom : before_vec) {
+      for (const auto &odom : before_vec) {
         frames_[frame_idx]->between_odoms.emplace_back(odom);
       }
       for (const auto &odom : after_vec) {
         frames_[frame_idx]->between_odoms.emplace_back(odom);
       }
       // 打印双拍提取信息
-      RCLCPP_INFO(this->get_logger(),
-                  "[-]激光雷达第 %d帧, 使用的里程计数据: %ld帧, 双拍提取数据: "
-                  "%ld帧, before_vec: %ld, after_vec: %ld",
-                  frame_idx, frames_[frame_idx]->between_next_odoms.size(),
-                  frames_[frame_idx]->between_odoms.size(), 
-                  before_vec.size(), after_vec.size());
+      // RCLCPP_INFO(this->get_logger(),
+      //             "[-]激光雷达第 %d帧, 使用的里程计数据: %ld帧, 双拍提取数据:
+      //             "
+      //             "%ld帧, before_vec: %ld, after_vec: %ld",
+      //             frame_idx, frames_[frame_idx]->between_next_odoms.size(),
+      //             frames_[frame_idx]->between_odoms.size(),
+      //             before_vec.size(), after_vec.size());
       frame_idx++;
     }
     // 补偿最后一帧激光雷达的数据丢弃，队列中始终有一帧数据
@@ -734,10 +566,12 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "处理帧 %zu/%zu, 时间: %.3f", frame_index,
                 frames_.size() - 1, rclcpp::Time(frame->timestamp).seconds());
-    // 使用扭曲补偿
-    frame->compensated_points = DistortionCorrector::correctDistortion(
-        frame, odom_map_, transforms::ToRigid3d(laser_to_base_));
-    // frame->compensated_points = convertScanToPoints(frame->scan);
+    // 使用扭曲补偿, 并获取扫描时刻插值轨迹
+    auto scan_points = convertScanToTimedPoints(frame->scan);
+    frame->compensated_points = CublicDistortionCorrector::correctDistortion(
+        scan_points, frame->between_odoms,
+        transforms::ToRigid3d(laser_to_base_), frame->timestamp,
+        frame->global_pose);
 
     // Update global pose tracker
     // INFO:
@@ -1131,6 +965,38 @@ private:
         }
       }
     }).detach();
+  }
+
+  static std::vector<TimePoint> convertScanToTimedPoints(
+      const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
+    std::vector<TimePoint> points;
+
+    for (size_t i = 0; i < scan_msg->ranges.size(); ++i) {
+      if (scan_msg->ranges[i] < scan_msg->range_min ||
+          scan_msg->ranges[i] > scan_msg->range_max ||
+          !std::isfinite(scan_msg->ranges[i])) {
+        continue;
+      }
+
+      double angle = scan_msg->angle_min + i * scan_msg->angle_increment;
+      double range = scan_msg->ranges[i];
+
+      TimePoint point;
+      point.x = range * std::cos(angle);
+      point.y = range * std::sin(angle);
+      int64_t point_stamp = rclcpp::Time(scan_msg->header.stamp).nanoseconds() +
+                            int(i * scan_msg->time_increment * 1e9);
+      point.timestamp = point_stamp;
+      if (i < scan_msg->intensities.size()) {
+        point.intensity = scan_msg->intensities[i];
+      } else {
+        point.intensity = 0.0;
+      }
+
+      points.push_back(point);
+    }
+
+    return points;
   }
 
   void
