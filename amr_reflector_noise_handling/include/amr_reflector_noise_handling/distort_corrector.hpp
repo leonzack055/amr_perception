@@ -424,6 +424,9 @@ public:
    * @param scan_points: 带有时间戳信息的扫描点云
    * @param odom_queue: 里程计队列，它为扫描点云时间片起止前后的里程计位姿
    * @param laser_to_base： 激光雷达到base的位姿，往往是静态TF发布的结果
+   * @param scan_start: 扫描开始时刻，可能与scan_point.front不同
+   * @param laser_pose_in_odom: 扫描开始时刻，在odom系下的laser位姿，作为返回项目
+   * @return 返回点云，其中按扫描顺序重新排列有效点索引，再返回，有效点在原始扫描中可能不连续，去除无效点后强制连续
    */
   static std::vector<Point>
   correctDistortion(std::vector<TimePoint> &scan_points,
