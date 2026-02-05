@@ -144,7 +144,8 @@ private:
 /**
  * @brief Interactive bag processing node
  */
-class ReflectorNoiseBagNode : public rclcpp::Node {
+class ReflectorNoiseBagNode
+    : public rclcpp::Node {
 public:
   ReflectorNoiseBagNode()
       : Node("reflector_noise_bag_node"), current_frame_index_(0),
@@ -155,8 +156,6 @@ public:
     this->declare_parameter("odom_topic", "/odom_combined");
     this->declare_parameter("classification_method", "pca");
     this->declare_parameter("raw_intensity_threshold", 1000.0);
-    this->declare_parameter("expected_diameter", 0.07);
-    this->declare_parameter("diameter_tolerance", 0.03);
     this->declare_parameter("enable_interpolation", false);
     this->declare_parameter("min_confidence", 0.5);
 
@@ -183,8 +182,6 @@ public:
         this->get_parameter("classification_method").as_string();
     raw_intensity_threshold_ =
         this->get_parameter("raw_intensity_threshold").as_double();
-    expected_diameter_ = this->get_parameter("expected_diameter").as_double();
-    diameter_tolerance_ = this->get_parameter("diameter_tolerance").as_double();
     enable_interpolation_ =
         this->get_parameter("enable_interpolation").as_bool();
     min_confidence_ = this->get_parameter("min_confidence").as_double();

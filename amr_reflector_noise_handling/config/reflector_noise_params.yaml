@@ -1,19 +1,27 @@
 # 反光柱噪声处理节点参数配置 (分形维数+改进插值+圆拟合+PCA分类版本)
 # Reflector Noise Handling Node Parameters (Fractal Dimension + Improved Interpolation + Circle Fit + PCA Classification Version)
 
-reflector_noise_handling:
+/reflector_noise_bag_node:
   ros__parameters:
-    # 激光扫描话题
+   # 激光扫描和车体里程的话题
     scan_topic: "/scan"
-    
+    odom_topic: "/odom_combined"
     # 地标输出话题
     landmark_topic: "/landmark_noise"
-    
     # 可视化标记话题
     marker_topic: "/reflector_noise_markers"
-    
-    # 补偿后点云话题（用于可视化调试）
-    compensated_cloud_topic: "/compensated_cloud"
+    # 可视化输出
+    use_global_frame: true
+    enbale_laser_pub: false
+    coordinate_frame: "odom"
+    pub_laser_topic: "/reflector_scan"
+    pub_filtered_topic: "/reflector_filtered_pointcould"
+    pub_clustered_topic: "/reflector_clustered_pointcloud"
+    pub_reflector_topic: "/reflector_detected_reflectors"
+    pub_trakced_reflector_topic: "/reflector_tracked_reflectors"
+    pub_laser_trajectory_topic: "/reflector_laser_trajectory"
+    pub_laser_pose_topic: "/laser_odom"
+
     
     # === 分类方法选择 ===
     # 分类方法: "fractal_dimension" (分形维数) 或 "pca" (主成分分析)
@@ -75,12 +83,6 @@ reflector_noise_handling:
       far_distance_threshold: 3.0
     
     # === 阶段3: 几何特征和描述子 ===
-    # 期望的反射柱直径 (米) - 5cm
-    expected_diameter: 0.05
-    
-    # 直径容差 (米)
-    diameter_tolerance: 0.03
-    
     # 最小置信度阈值
     min_confidence: 0.4
     

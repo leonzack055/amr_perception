@@ -1,0 +1,41 @@
+/reflector_noise_bag_node:
+  ros__parameters:
+    bag_path: ./bag/linesCargo.bag
+    classification_method: pca
+    coordinate_frame: laser
+    enable_interpolation: false
+    enbale_laser_pub: true
+    global_tracking:
+      confidence_filter_alpha: 0.2
+      confirm_time_window: 1.0
+      diameter_filter_alpha: 0.3
+      inactive_timeout: 5.0
+      match_distance_inactive: 0.5
+      match_distance_threshold: 0.3
+      max_inactive_time: 60.0
+      max_std_dev: 0.5
+      min_confidence_to_track: 0.3
+      min_detections_in_window: 6
+      min_std_dev: 0.02
+      position_filter_alpha: 0.3
+      position_filter_beta: 0.2
+    min_confidence: 0.5
+    odom_topic: /odom_combined
+    pub_clustered_topic: /clustered_pointcloud
+    pub_filtered_topic: /filtered_pointcould
+    pub_laser_pose_topic: /laser_pose
+    pub_laser_topic: /scan
+    pub_laser_trajectory_topic: /laser_trajectory
+    pub_reflector_topic: /detected_reflectors
+    pub_trakced_reflector_topic: /tracked_reflectors
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    raw_intensity_threshold: 1000.0
+    scan_topic: /scan
+    use_global_frame: false
+    use_sim_time: false
