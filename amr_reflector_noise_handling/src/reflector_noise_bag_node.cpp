@@ -144,8 +144,7 @@ private:
 /**
  * @brief Interactive bag processing node
  */
-class ReflectorNoiseBagNode
-    : public rclcpp::Node {
+class ReflectorNoiseBagNode : public rclcpp::Node {
 public:
   ReflectorNoiseBagNode()
       : Node("reflector_noise_bag_node"), current_frame_index_(0),
@@ -158,6 +157,11 @@ public:
     this->declare_parameter("raw_intensity_threshold", 1000.0);
     this->declare_parameter("enable_interpolation", false);
     this->declare_parameter("min_confidence", 0.5);
+
+    // 配置点云矫正器
+    configureDistortionCorrector();
+    // 配置聚类器
+    configureFixedDBSCAN();
 
     // Global tracking parameters
     this->declare_parameter("global_tracking.match_distance_threshold", 0.3);
@@ -302,15 +306,6 @@ private:
     circle_params.far_distance_threshold = 3.0;
     circle_fitter_.setParams(circle_params);
 
-    // Configure improved interpolator
-    ImprovedInterpolationCompensator::InterpolationParams interp_params;
-    interp_params.min_points = 5;
-    interp_params.max_points = 20;
-    interp_params.min_distance = 2.0;
-    interp_params.max_distance = 4.0;
-    interp_params.gap_multiplier = 0.8;
-    improved_interpolator_.setParams(interp_params);
-
     // Configure PCA classifier
     ShapeClassificationParams pca_params;
     pca_params.max_elongation_for_post = 9.50;
@@ -318,10 +313,6 @@ private:
     pca_params.min_linearity_for_board = 0.93;
     pca_params.max_linearity_for_post = 0.97;
     pca_classifier_.setParams(pca_params);
-
-    // Configure geometric validator
-    geometric_validator_.setExpectedDiameter(expected_diameter_);
-    geometric_validator_.setDiameterTolerance(diameter_tolerance_);
   }
 
   /**
@@ -542,65 +533,44 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "处理帧 %zu/%zu, 时间: %.3f", frame_index,
                 frames_.size() - 1, rclcpp::Time(frame->timestamp).seconds());
-    // 使用扭曲补偿, 并获取扫描时刻插值轨迹
+    // 1. 使用扭曲补偿, 并获取扫描时刻插值轨迹
     auto scan_points = convertScanToTimedPoints(frame->scan);
     auto compensated_points = CublicDistortionCorrector::correctDistortion(
         scan_points, frame->between_odoms,
         transforms::ToRigid3d(laser_to_base_), frame->timestamp,
         frame->global_pose);
-    frame->compensated_points = compensated_points;
-    // Apply intensity filtering
+    if (!use_distort_corrector_) {
+      frame->compensated_points = convertScanToPoints(frame->scan);
+    } else {
+      frame->compensated_points = compensated_points;
+    }
+    // 2. Apply intensity filtering
     auto filtered_points =
-        filterByIntensity(compensated_points, raw_intensity_threshold_);
-
+        filterByIntensity(frame->compensated_points, raw_intensity_threshold_);
     RCLCPP_INFO(this->get_logger(), "原始点数: %zu, 强度过滤后: %zu",
-                compensated_points.size(), filtered_points.size());
-
-    // DBSCAN clustering
-    // TODO: 在Point中加入OrignIndex然后利用这个索引进行回溯,
-    // cluster中点云以originIndex进行排序;
-    auto cluster_indices = fixed_dbscan_.cluster(filtered_points);
+                frame->compensated_points.size(), filtered_points.size());
+    // 3. DBSCAN clustering
     frame->filtered_points = filtered_points;
-
-    if (cluster_indices.empty()) {
+    std::vector<std::vector<Point>> clusters =
+        fixed_dbscan_.splitCluster(frame->filtered_points);
+    if (clusters.empty()) {
       RCLCPP_WARN(this->get_logger(), "DBSCAN聚类后无簇");
       frame->reflectors.clear();
       return;
     }
-    RCLCPP_INFO(this->get_logger(), "DBSCAN聚类得到 %zu 个簇",
-                cluster_indices.size());
-    // 连续性过滤,同样以 Point点云以 OriginIndex进行索引排序
-    auto splited_clusters =
-        continueClusterDetector(filtered_points, cluster_indices, 3);
-    RCLCPP_INFO(this->get_logger(), "DBSCAN连续性分割后,得到 %zu 个簇",
-                splited_clusters.size());
-    // Convert indices to clusters
-    std::vector<std::vector<Point>> clusters;
-    int cluster_idx = 0;
-    for (const auto &indices : splited_clusters) {
-      std::vector<Point> cluster;
-      cluster.reserve(indices.size());
-      for (int idx : indices) {
-        cluster.push_back(filtered_points[idx]);
-        frame->filtered_points[idx].intensity = 2000 + cluster_idx * 200;
-      }
-      clusters.push_back(cluster);
-      cluster_idx++;
-    }
 
-    // Detect reflectors
-    // TODO: 修复圆拟合检测性问题，连续性插值检测;
+    // 4. Detect reflectors
+    // INFO: 修复圆拟合检测性问题，连续性插值检测;
     // 局部非凹性检测; 1.2m内有大噪声; 保存： 当前帧pcd点云;
     detectReflectors(clusters, frame->reflectors);
-
     RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
                 frame->reflectors.size());
 
-    // Update global reflector tracker
+    // 5. Update global reflector tracker
     global_reflector_tracker_.update(frame->reflectors, frame->global_pose,
                                      frame->timestamp);
     // Get confirmed reflectors for tracking
-    // TODO: 获取匹配后的反光柱；
+    // INFO: 获取匹配后的反光柱；
     // 这里获取的是短时内全部的已经确定为真实的激活反光柱；对于想看到
     // 经过跟踪过滤后反光柱位置和判定情况的情况下，需要再重新获取。
     auto confirmed_reflectors =
@@ -619,39 +589,6 @@ private:
     auto confirmed_detected_reflectors =
         confirmDetetedReflectors(frame->reflectors, confirmed_reflectors);
     frame->reflectors = confirmed_detected_reflectors;
-  }
-  /**
-   * @brief
-   * 利用聚类的索引序列，判断聚类的连续性，如果中间有断开，则认为是两个聚类
-   */
-  std::vector<std::vector<int>>
-  continueClusterDetector(const std::vector<Point> &filtered_points,
-                          const std::vector<std::vector<int>> &cluster_indices,
-                          int gap_threshold) {
-    std::vector<std::vector<int>> new_cluster_indices;
-    int cluster_idx = 0;
-    for (const auto &indices : cluster_indices) {
-      std::vector<int> new_cluster;
-      for (std::vector<int>::const_iterator iter = indices.begin();
-           iter < indices.end() - 1; ++iter) {
-        int index_gap = filtered_points[*(iter + 1)].origin_index -
-                        filtered_points[*iter].origin_index;
-        // gap设置为3 超过3个重新打断分类
-        if (index_gap > gap_threshold) {
-          std::vector<int> new_split_cluster(new_cluster);
-          if (new_split_cluster.size() > 8) {
-            new_cluster_indices.push_back(new_split_cluster);
-          }
-          new_cluster.clear();
-        }
-        new_cluster.push_back(*iter);
-      }
-      if (new_cluster.size() > 8) {
-        new_cluster_indices.push_back(new_cluster);
-      }
-      cluster_idx++;
-    }
-    return new_cluster_indices;
   }
 
   /**
@@ -696,12 +633,6 @@ private:
       // 圆拟合基本失败,修正圆拟合方法
       // auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
       auto circle_fit = circle_fitter_.fitArcWithRANSAC(processed_cluster);
-
-      // if (!circle_fitter_.validateFit(circle_fit, cluster.size(), distance))
-      // {
-      //   RCLCPP_INFO(this->get_logger(), "簇 %zu: 圆拟合失败", idx);
-      //   continue;
-      // }
       if (!circle_fit.is_valid) {
         RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合失败", idx);
         continue;
@@ -757,11 +688,7 @@ private:
       const std::vector<DetectedReflector> &reflectors,
       const std::vector<TrackedReflector> &confirmed_local_reflectors) {
     std::vector<DetectedReflector> confirmed_reflectors;
-
     // 计算匹配距离
-    // double min_distance = std::numeric_limits<double>::max();
-    // double matched_idx = -1;
-    // double min_matched_distance = 0.1;
     // 直接利用确认后的反光柱位置进行匹配
     for (int i = 0; i < reflectors.size(); i++) {
       for (int j = 0; j < confirmed_local_reflectors.size(); j++) {
@@ -782,11 +709,8 @@ private:
     if (current_frame_index_ >= frames_.size()) {
       return;
     }
-
     const auto &frame = frames_[current_frame_index_];
-
     visualization_helper_->pulishOriginLaserScan(frame->scan);
-    // Publish point cloud with current timestamp
     // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
     visualization_helper_->publishFilteredPointCloud(frame->compensated_points,
                                                      frame->global_pose);
@@ -794,11 +718,9 @@ private:
     // 指定发布frame是以laser为准，还是以矫正后map为准的global_points
     visualization_helper_->publishClusteredPointCloud(frame->filtered_points,
                                                       frame->global_pose);
-    // Publish reflector markers with current timestamp
     // 新增可视化拟合圆, 默认是以laser为准，可原则是否以map为frame
     visualization_helper_->publishReflectorMarkers(frame->reflectors,
                                                    frame->global_pose);
-    // Publish tracked reflector markers
     // 新增可视化跟踪后的反光柱, 默认是以laser为准，可原则是否以map为frame
     visualization_helper_->publishTrackedReflectorMarkers(
         global_reflector_tracker_.getAllTrackedReflectors(),
@@ -911,6 +833,34 @@ private:
     return points;
   }
 
+  static std::vector<Point>
+  convertScanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
+    std::vector<Point> points;
+    int index = 0;
+    for (size_t i = 0; i < scan_msg->ranges.size(); ++i) {
+      if (scan_msg->ranges[i] < scan_msg->range_min ||
+          scan_msg->ranges[i] > scan_msg->range_max ||
+          !std::isfinite(scan_msg->ranges[i])) {
+        continue;
+      }
+
+      double angle = scan_msg->angle_min + i * scan_msg->angle_increment;
+      double range = scan_msg->ranges[i];
+
+      Point point;
+      point.x = range * std::cos(angle);
+      point.y = range * std::sin(angle);
+      point.origin_index = index++;
+      if (i < scan_msg->intensities.size()) {
+        point.intensity = scan_msg->intensities[i];
+      } else {
+        point.intensity = 0.0;
+      }
+      points.push_back(point);
+    }
+    return points;
+  }
+
   /**
    * @brief Filter points by intensity
    */
@@ -948,15 +898,61 @@ private:
     return centroid;
   }
 
+  void configureDistortionCorrector() {
+    this->declare_parameter("distort_corrector.enable", true);
+    this->use_distort_corrector_ =
+        this->get_parameter("distort_corrector.enable").as_bool();
+    this->declare_parameter("distort_corrector.method", "Spline");
+    this->distortcorrect_method_ =
+        this->get_parameter("distort_corrector.method").as_string();
+    if (use_distort_corrector_) {
+      RCLCPP_INFO_STREAM(this->get_logger(),
+                         "[✔] 配置点云矫正器: " << distortcorrect_method_);
+    } else {
+      RCLCPP_WARN_STREAM(this->get_logger(), "[✘] 没有使用点云矫正器！！！！");
+    }
+  }
+
+  void configureFixedDBSCAN() {
+    FixedDBSCAN::Config dbscan_config;
+    this->declare_parameter("fixed_dbscan.eps", 0.05);
+    this->declare_parameter("fixed_dbscan.min_points", 5);
+    this->declare_parameter("fixed_dbscan.contine_gap", 3);
+    this->declare_parameter("fixed_dbscan.continue_points", 8);
+    // 提取参数
+    dbscan_config.eps = this->get_parameter("fixed_dbscan.eps").as_double();
+    dbscan_config.min_points =
+        this->get_parameter("fixed_dbscan.min_points").as_int();
+    dbscan_config.gap_threshold =
+        this->get_parameter("fixed_dbscan.contine_gap").as_int();
+    dbscan_config.continue_points =
+        this->get_parameter("fixed_dbscan.continue_points").as_int();
+    this->fixed_dbscan_ = FixedDBSCAN(dbscan_config);
+    // 打印配置信息
+    RCLCPP_INFO_STREAM(this->get_logger(),
+                       "[✔] 配置FixedDBSCAN.eps: " << dbscan_config.eps);
+    RCLCPP_INFO_STREAM(this->get_logger(), "[✔] 配置FixedDBSCAN.min_points: "
+                                               << dbscan_config.min_points);
+    RCLCPP_INFO_STREAM(this->get_logger(), "[✔] 配置FixedDBSCAN.contine_gap: "
+                                               << dbscan_config.gap_threshold);
+    RCLCPP_INFO_STREAM(this->get_logger(),
+                       "[✔] 配置FixedDBSCAN.continue_points: "
+                           << dbscan_config.continue_points);
+  }
+
   // Parameters
   std::string bag_path_;
   std::string scan_topic_;
   std::string odom_topic_;
   std::string classification_method_;
   double raw_intensity_threshold_;
-  double expected_diameter_;
-  double diameter_tolerance_;
   bool enable_interpolation_;
+  // 点云矫正器
+  bool use_distort_corrector_;
+  std::string distortcorrect_method_;
+  // 聚类器
+  FixedDBSCAN fixed_dbscan_;
+
   double min_confidence_;
   // 激光与里程计相关数据
   std::unordered_map<int64_t, sensor_msgs::msg::LaserScan::SharedPtr>
@@ -972,23 +968,16 @@ private:
 
   // Transform
   geometry_msgs::msg::TransformStamped laser_to_base_;
-
   // Pose tracking
   PoseTracker pose_tracker_;
-
+  // Detection modules
+  PCAShapeClassifier pca_classifier_;
+  CircleFitter circle_fitter_;
+  PracticalDescriptorExtractor descriptor_extractor_;
   // Global reflector tracking
   GlobalReflectorTracker global_reflector_tracker_;
 
-  // Detection modules
-  FixedDBSCAN fixed_dbscan_;
-  FractalDimensionCalculator fd_calculator_;
-  PCAShapeClassifier pca_classifier_;
-  ImprovedInterpolationCompensator improved_interpolator_;
-  CircleFitter circle_fitter_;
-  PracticalDescriptorExtractor descriptor_extractor_;
-  GeometricValidator geometric_validator_;
-
-  // Publishers
+  // 可视化 Publishers
   std::shared_ptr<VisualizationHelper> visualization_helper_;
 
   // Timer for continuous publishing

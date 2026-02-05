@@ -21,7 +21,10 @@ VisualizationHelper::VisualizationHelper(const rclcpp::Node::SharedPtr &node)
 }
 VisualizationHelper::VisualizationHelper(const rclcpp::Node::SharedPtr &node,
                                          const Config &config)
-    : node_(node), config_(config) {}
+    : node_(node), config_(config) {
+  // 直接声明可视化消息
+  CreatePublisher();
+}
 VisualizationHelper::~VisualizationHelper() {}
 
 void VisualizationHelper::LoadConfigFromNode() {

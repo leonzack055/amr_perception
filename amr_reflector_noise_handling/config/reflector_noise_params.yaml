@@ -30,6 +30,15 @@
     # === 阶段1: 固定强度阈值和DBSCAN ===
     # 原始强度阈值（固定值，不进行补偿或归一化）
     raw_intensity_threshold: 1000.0
+
+    distort_corrector:
+      enable: false
+      method: "Spline"
+    fixed_dbscan:
+      eps: 0.05
+      min_points: 5
+      contine_gap: 3
+      continue_points: 8
     
     # === 阶段2: 分形维数过滤 ===
     fractal_dimension:
