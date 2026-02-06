@@ -62,7 +62,7 @@ public:
             : match_distance_threshold(0.3)
             , match_distance_inactive(0.5)
             , confirm_time_window(1.0)
-            , min_detections_in_window(6)
+            , min_detections_in_window(8)
             , inactive_timeout(5.0)
             , max_inactive_time(60.0)
             , position_filter_alpha(0.3)

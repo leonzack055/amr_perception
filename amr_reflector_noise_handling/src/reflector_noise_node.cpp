@@ -93,10 +93,10 @@ public:
         
         // Configure PCA classifier
         ShapeClassificationParams pca_params;
-        pca_params.max_elongation_for_post = this->get_parameter("pca_classification.max_elongation_post").as_double();
-        pca_params.min_elongation_for_board = this->get_parameter("pca_classification.min_elongation_board").as_double();
-        pca_params.min_linearity_for_board = this->get_parameter("pca_classification.min_linearity_board").as_double();
-        pca_params.max_linearity_for_post = this->get_parameter("pca_classification.max_linearity_post").as_double();
+        pca_params.max_elongation_post = this->get_parameter("pca_classification.max_elongation_post").as_double();
+        pca_params.min_elongation_board = this->get_parameter("pca_classification.min_elongation_board").as_double();
+        pca_params.min_linearity_board = this->get_parameter("pca_classification.min_linearity_board").as_double();
+        pca_params.max_linearity_post = this->get_parameter("pca_classification.max_linearity_post").as_double();
         pca_classifier_.setParams(pca_params);
         
         // Configure improved interpolator
@@ -165,8 +165,8 @@ public:
                         fd_params.min_fd_for_post, fd_params.max_fd_for_post);
         } else if (classification_method_ == "pca") {
             RCLCPP_INFO(this->get_logger(), "PCA形状分类: 启用 (延伸度阈值: [%.1f, %.1f], 线性度: [%.1f, %.1f])",
-                        pca_params.max_elongation_for_post, pca_params.min_elongation_for_board,
-                        pca_params.max_linearity_for_post, pca_params.min_linearity_for_board);
+                        pca_params.max_elongation_post, pca_params.min_elongation_board,
+                        pca_params.max_linearity_post, pca_params.min_linearity_board);
         }
         RCLCPP_INFO(this->get_logger(), "改进插值: 启用 (距离范围: [%.1f, %.1f]m)",
                     interp_params.min_distance, interp_params.max_distance);

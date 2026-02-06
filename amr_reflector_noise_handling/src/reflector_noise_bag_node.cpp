@@ -26,13 +26,9 @@
 #include "amr_reflector_noise_handling/common/time_order_queue.hpp"
 #include "amr_reflector_noise_handling/distort_corrector.hpp"
 #include "amr_reflector_noise_handling/fixed_dbscan.hpp"
-#include "amr_reflector_noise_handling/fractal_dimension.hpp"
-#include "amr_reflector_noise_handling/geometric_validator.hpp"
 #include "amr_reflector_noise_handling/global_reflector_tracker.hpp"
-#include "amr_reflector_noise_handling/improved_interpolation.hpp"
 #include "amr_reflector_noise_handling/pca_shape_classifier.hpp"
-#include "amr_reflector_noise_handling/practical_descriptor.hpp"
-#include "amr_reflector_noise_handling/reflector_tracker.hpp"
+#include "amr_reflector_noise_handling/reflector_detector.hpp"
 #include "amr_reflector_noise_handling/types.hpp"
 #include "amr_reflector_noise_handling/types/msg_conversion.hpp"
 #include "amr_reflector_noise_handling/types/reflector_common.hpp"
@@ -155,29 +151,7 @@ public:
     this->declare_parameter("odom_topic", "/odom_combined");
     this->declare_parameter("classification_method", "pca");
     this->declare_parameter("raw_intensity_threshold", 1000.0);
-    this->declare_parameter("enable_interpolation", false);
     this->declare_parameter("min_confidence", 0.5);
-
-    // 配置点云矫正器
-    configureDistortionCorrector();
-    // 配置聚类器
-    configureFixedDBSCAN();
-
-    // Global tracking parameters
-    this->declare_parameter("global_tracking.match_distance_threshold", 0.3);
-    this->declare_parameter("global_tracking.match_distance_inactive", 0.5);
-    this->declare_parameter("global_tracking.confirm_time_window", 1.0);
-    this->declare_parameter("global_tracking.min_detections_in_window", 6);
-    this->declare_parameter("global_tracking.inactive_timeout", 5.0);
-    this->declare_parameter("global_tracking.max_inactive_time", 60.0);
-    this->declare_parameter("global_tracking.position_filter_alpha", 0.3);
-    this->declare_parameter("global_tracking.position_filter_beta", 0.2);
-    this->declare_parameter("global_tracking.min_std_dev", 0.02);
-    this->declare_parameter("global_tracking.max_std_dev", 0.5);
-    this->declare_parameter("global_tracking.min_confidence_to_track", 0.3);
-    this->declare_parameter("global_tracking.confidence_filter_alpha", 0.2);
-    this->declare_parameter("global_tracking.diameter_filter_alpha", 0.3);
-
     // Get parameters
     bag_path_ = this->get_parameter("bag_path").as_string();
     scan_topic_ = this->get_parameter("scan_topic").as_string();
@@ -186,48 +160,12 @@ public:
         this->get_parameter("classification_method").as_string();
     raw_intensity_threshold_ =
         this->get_parameter("raw_intensity_threshold").as_double();
-    enable_interpolation_ =
-        this->get_parameter("enable_interpolation").as_bool();
     min_confidence_ = this->get_parameter("min_confidence").as_double();
 
-    // Configure global tracking
-    GlobalReflectorTracker::Config tracking_config;
-    tracking_config.match_distance_threshold =
-        this->get_parameter("global_tracking.match_distance_threshold")
-            .as_double();
-    tracking_config.match_distance_inactive =
-        this->get_parameter("global_tracking.match_distance_inactive")
-            .as_double();
-    tracking_config.confirm_time_window =
-        this->get_parameter("global_tracking.confirm_time_window").as_double();
-    tracking_config.min_detections_in_window =
-        this->get_parameter("global_tracking.min_detections_in_window")
-            .as_int();
-    tracking_config.inactive_timeout =
-        this->get_parameter("global_tracking.inactive_timeout").as_double();
-    tracking_config.max_inactive_time =
-        this->get_parameter("global_tracking.max_inactive_time").as_double();
-    tracking_config.position_filter_alpha =
-        this->get_parameter("global_tracking.position_filter_alpha")
-            .as_double();
-    tracking_config.position_filter_beta =
-        this->get_parameter("global_tracking.position_filter_beta").as_double();
-    tracking_config.min_std_dev =
-        this->get_parameter("global_tracking.min_std_dev").as_double();
-    tracking_config.max_std_dev =
-        this->get_parameter("global_tracking.max_std_dev").as_double();
-    tracking_config.min_confidence_to_track =
-        this->get_parameter("global_tracking.min_confidence_to_track")
-            .as_double();
-    tracking_config.confidence_filter_alpha =
-        this->get_parameter("global_tracking.confidence_filter_alpha")
-            .as_double();
-    tracking_config.diameter_filter_alpha =
-        this->get_parameter("global_tracking.diameter_filter_alpha")
-            .as_double();
-
-    global_reflector_tracker_ = GlobalReflectorTracker(tracking_config);
-
+    // 配置点云矫正器
+    configureDistortionCorrector();
+    // 配置聚类器
+    configureFixedDBSCAN();
     // Configure detection modules
     configureDetectionModules();
 
@@ -293,31 +231,19 @@ public:
   }
 
 private:
-  /**
-   * @brief Configure detection modules
-   */
-  void configureDetectionModules() {
-    // Configure circle fittercircle_fitter_
-    CircleFitParams circle_params;
-    circle_params.max_fit_error = 0.03;
-    circle_params.min_inlier_ratio = 0.5;
-    circle_params.max_fit_error_near = 0.04;
-    circle_params.max_fit_error_far = 0.02;
-    circle_params.far_distance_threshold = 3.0;
-    circle_fitter_.setParams(circle_params);
-
+    // 配置算法相关参数，从ros2的参数服务器中提取，只提取一次
+    void configureDetectionModules() {
     // Configure PCA classifier
-    ShapeClassificationParams pca_params;
-    pca_params.max_elongation_for_post = 9.50;
-    pca_params.min_elongation_for_board = 12.0;
-    pca_params.min_linearity_for_board = 0.93;
-    pca_params.max_linearity_for_post = 0.97;
-    pca_classifier_.setParams(pca_params);
+    configurePCAClassification();
+    // Configure circle fittercircle_fitter_
+    configureCicrleFit();
+    // Configure GlobalTracker
+    configureGlobalTracker();
   }
 
   /**
    * @brief Load all frames from bag
-   * WARN: 由于里程计前后时间跳变, 这里选用录包时刻的系统时间戳
+   * WARN: 由于里程计前后时间跳变, 这里选用录包时刻的系统时间戳为Laser时间
    */
   bool loadAllFrames(rosbag2_cpp::Reader &reader) {
     int64_t peek_time = 0; // Peek time for next message
@@ -519,7 +445,7 @@ private:
   }
 
   /**
-   * @brief Process a single frame
+   * @brief 检测一帧激光的反光柱
    */
   void processFrame(size_t frame_index) {
     if (frame_index >= frames_.size()) {
@@ -535,6 +461,7 @@ private:
                 frames_.size() - 1, rclcpp::Time(frame->timestamp).seconds());
     // 1. 使用扭曲补偿, 并获取扫描时刻插值轨迹
     auto scan_points = convertScanToTimedPoints(frame->scan);
+    /// 矫正点云并计算laser在矫正拟合器中估计的全局位姿
     auto compensated_points = CublicDistortionCorrector::correctDistortion(
         scan_points, frame->between_odoms,
         transforms::ToRigid3d(laser_to_base_), frame->timestamp,
@@ -558,152 +485,24 @@ private:
       frame->reflectors.clear();
       return;
     }
-
     // 4. Detect reflectors
     // INFO: 修复圆拟合检测性问题，连续性插值检测;
     // 局部非凹性检测; 1.2m内有大噪声; 保存： 当前帧pcd点云;
-    detectReflectors(clusters, frame->reflectors);
-    RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
-                frame->reflectors.size());
-
-    // 5. Update global reflector tracker
-    global_reflector_tracker_.update(frame->reflectors, frame->global_pose,
-                                     frame->timestamp);
-    // Get confirmed reflectors for tracking
-    // INFO: 获取匹配后的反光柱；
-    // 这里获取的是短时内全部的已经确定为真实的激活反光柱；对于想看到
-    // 经过跟踪过滤后反光柱位置和判定情况的情况下，需要再重新获取。
-    auto confirmed_reflectors =
-        global_reflector_tracker_.getConfirmedReflectors();
-    RCLCPP_INFO(this->get_logger(), "全局跟踪: 已确认 %zu 个反光柱",
-                confirmed_reflectors.size());
-
-    // Visualization data is ready, will be published by timer
-    for (auto &reflector : confirmed_reflectors) {
-      auto local_postion = frame->global_pose.inverse() *
-                           Eigen::Vector3d(reflector.global_position.x,
-                                           reflector.global_position.y, 0.0);
-      reflector.global_position.x = local_postion.x();
-      reflector.global_position.y = local_postion.y();
-    }
-    auto confirmed_detected_reflectors =
-        confirmDetetedReflectors(frame->reflectors, confirmed_reflectors);
-    frame->reflectors = confirmed_detected_reflectors;
-  }
-
-  /**
-   * @brief Detect reflectors from clusters
-   */
-  void detectReflectors(const std::vector<std::vector<Point>> &clusters,
-                        std::vector<DetectedReflector> &reflectors) {
-    reflectors.clear();
-
-    for (size_t idx = 0; idx < clusters.size(); ++idx) {
-      const auto &cluster = clusters[idx];
-      Point center = computeCentroid(cluster);
-      double distance = center.distanceFromOrigin();
-
-      // Classification
-      bool is_reflector_candidate = false;
-
-      if (classification_method_ == "pca") {
-        auto pca_features = pca_classifier_.computeShapeFeatures(cluster);
-        auto circle_fit_temp = circle_fitter_.fitCircle(cluster);
-        // 分别根据pca信息和拟合圆信息判别是直线，还是圆弧，以及噪声
-        // 噪声检测基本失败
-        auto object_type = pca_classifier_.classifyObject(pca_features);
-
-        is_reflector_candidate = (object_type == REFLECTOR_POST);
-
-        RCLCPP_INFO(this->get_logger(),
-                    "簇 %zu: 延伸度=%.3f, 线性度=%.3f, 圆形度=%.3f, "
-                    "聚类点数=%zu, 中心距离=%.3f, 类型=%s",
-                    idx, pca_features.elongation, pca_features.linearity,
-                    pca_features.circularity, cluster.size(), distance,
-                    is_reflector_candidate ? "反光柱" : "其他");
-      }
-
-      if (!is_reflector_candidate) {
-        continue;
-      }
-
-      // Interpolation
-      // 插值补偿距离较远的稀疏点云，进行弧长插补(Depatched)
-      auto processed_cluster = cluster;
-      // 圆拟合基本失败,修正圆拟合方法
-      // auto circle_fit = circle_fitter_.fitCircle(processed_cluster);
-      auto circle_fit = circle_fitter_.fitArcWithRANSAC(processed_cluster);
-      if (!circle_fit.is_valid) {
-        RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合失败", idx);
-        continue;
-      }
-      RCLCPP_INFO(this->get_logger(),
-                  "簇 %zu : 中心(%.3f,%.3f), 直径=%.3fm, 总误差=%.6f, "
-                  "内点数=%d, 内点比例=%.3f, 总点数=%d, 内点误差=%6f, "
-                  "外点误差=%6f,  凹半圆检测比率=%4f, 凸半圆检测比率=%4f ",
-                  idx, circle_fit.center.x, circle_fit.center.y,
-                  circle_fit.radius * 2.0, circle_fit.fit_error,
-                  circle_fit.inlier_count, circle_fit.inlier_ratio,
-                  circle_fit.total_points, circle_fit.inner_error,
-                  circle_fit.outline_error, circle_fit.concave_ratio,
-                  circle_fit.convex_ratio);
-      if (circle_fit.concave_ratio > 0.2) {
-        RCLCPP_WARN(this->get_logger(), "簇 %zu: RANSAC圆拟合为凹型,判定失效",
-                    idx);
-        continue;
-      }
-      if (circle_fitter_.validateFit(circle_fit, cluster.size(), distance)) {
-        DetectedReflector reflector;
-        reflector.center = circle_fit.center;
-        reflector.diameter = 2 * circle_fit.radius;
-        reflector.confidence = 0.8;
-        reflector.point_count = cluster.size();
-        reflector.idx = idx;
-        reflectors.push_back(reflector);
-      } else {
-        RCLCPP_WARN(this->get_logger(),
-                    "簇 %zu: RANSAC圆拟合圆拟合 内点误差验证失败", idx);
-      }
-      // Compute confidence
+    if (use_short_tracker_) {
+      frame->reflectors = reflector_detector_.detectReflectorsWithShortTracking(
+          clusters, frame->global_pose, frame->timestamp);
+      RCLCPP_INFO(this->get_logger(), "短时跟踪检测到 %zu 个反光柱",
+                  frame->reflectors.size());
+    } else {
+      frame->reflectors = reflector_detector_.detectReflectors(clusters);
+      RCLCPP_INFO(this->get_logger(), "检测到 %zu 个反光柱",
+                  frame->reflectors.size());
     }
   }
 
-  /**
-   * @brief Compute confidence for a detected reflector
-   */
-  double computeConfidence([[maybe_unused]] const std::vector<Point> &cluster,
-                           const CircleFitResult &circle_fit) {
-    // Simple confidence based on fit quality
-    double fit_quality = 1.0 - std::min(1.0, circle_fit.fit_error / 0.03);
-    double inlier_quality = circle_fit.inlier_ratio;
-
-    return 0.6 * fit_quality + 0.4 * inlier_quality;
-  }
 
   /**
-   * @brief
-   * 计算检测到的Reflectors与跟踪器输出的Confirm之间的结果，来给出确认的检测值
-   */
-  std::vector<DetectedReflector> confirmDetetedReflectors(
-      const std::vector<DetectedReflector> &reflectors,
-      const std::vector<TrackedReflector> &confirmed_local_reflectors) {
-    std::vector<DetectedReflector> confirmed_reflectors;
-    // 计算匹配距离
-    // 直接利用确认后的反光柱位置进行匹配
-    for (int i = 0; i < reflectors.size(); i++) {
-      for (int j = 0; j < confirmed_local_reflectors.size(); j++) {
-        if (reflectors[i].center.distanceTo(
-                confirmed_local_reflectors[j].global_position) <
-            (confirmed_local_reflectors[j].position_std_dev * 2)) {
-          confirmed_reflectors.push_back(reflectors[i]);
-        }
-      }
-    }
-    return confirmed_reflectors;
-  }
-
-  /**
-   * @brief Timer callback for continuous publishing
+   * @brief 时间回调定时器进行发布可视化消息，调用visualization_helper
    */
   void publishTimerCallback() {
     if (current_frame_index_ >= frames_.size()) {
@@ -723,7 +522,7 @@ private:
                                                    frame->global_pose);
     // 新增可视化跟踪后的反光柱, 默认是以laser为准，可原则是否以map为frame
     visualization_helper_->publishTrackedReflectorMarkers(
-        global_reflector_tracker_.getAllTrackedReflectors(),
+        reflector_detector_.getCurrentAllTrackedReflectors(),
         frame->global_pose);
     visualization_helper_->publishLaserPose(frame->global_pose);
   }
@@ -801,6 +600,9 @@ private:
     }).detach();
   }
 
+  /*
+  * @brief 将LaserScan转化成带有时间戳，强度和有向序列的二维点
+  */
   static std::vector<TimePoint> convertScanToTimedPoints(
       const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
     std::vector<TimePoint> points;
@@ -940,42 +742,184 @@ private:
                            << dbscan_config.continue_points);
   }
 
-  // Parameters
+  void configurePCAClassification() {
+    bool use_pca_classification = false;
+    this->declare_parameter("pca_classification.enable", true);
+    this->declare_parameter("pca_classification.min_points", 13);
+    this->declare_parameter("pca_classification.max_elongation_post", 9.5);
+    this->declare_parameter("pca_classification.min_elongation_board", 12.0);
+    this->declare_parameter("pca_classification.max_linearity_post", 0.97);
+    this->declare_parameter("pca_classification.min_linearity_board", 0.93);
+    this->declare_parameter("pca_classification.near_distance", 1.3);
+    this->declare_parameter("pca_classification.near_min_points", 20);
+    this->declare_parameter("pca_classification.near_max_linearity_post", 0.89);
+    // Configure
+    use_pca_classification =
+        this->get_parameter("pca_classification.enable").as_bool();
+    ShapeClassificationParams pca_params;
+    pca_params.min_points =
+        this->get_parameter("pca_classification.min_points").as_int();
+    pca_params.max_elongation_post =
+        this->get_parameter("pca_classification.max_elongation_post")
+            .as_double();
+    pca_params.min_elongation_board =
+        this->get_parameter("pca_classification.min_elongation_board")
+            .as_double();
+    pca_params.max_linearity_post =
+        this->get_parameter("pca_classification.max_linearity_post")
+            .as_double();
+    pca_params.min_linearity_board =
+        this->get_parameter("pca_classification.min_linearity_board")
+            .as_double();
+    pca_params.near_distance =
+        this->get_parameter("pca_classification.near_distance").as_double();
+    pca_params.near_min_points =
+        this->get_parameter("pca_classification.near_min_points").as_int();
+    pca_params.near_max_linearity_post =
+        this->get_parameter("pca_classification.near_max_linearity_post")
+            .as_double();
+    // 配置
+    reflector_detector_.setDetectMethod(classification_method_);
+    if (use_pca_classification) {
+      reflector_detector_.configPCAShapeClassifier(pca_params);
+    }
+  }
+
+  void configureCicrleFit() {
+    this->declare_parameter("circle_fit.max_fit_error", 0.03);
+    this->declare_parameter("circle_fit.min_inlier_ratio", 0.5);
+    this->declare_parameter("circle_fit.max_fit_error_near", 0.01);
+    this->declare_parameter("circle_fit.max_fit_error_far", 0.02);
+    this->declare_parameter("circle_fit.far_distance_threshold", 1.5);
+    this->declare_parameter("circle_fit.min_radius", 0.02);
+    this->declare_parameter("circle_fit.max_radius", 0.05);
+    this->declare_parameter("circle_fit.max_concave_ratio", 0.2);
+    this->declare_parameter("circle_fit.ransac_iterations", 100);
+    this->declare_parameter("circle_fit.ransac_inlier_threshold", 0.0015);
+    this->declare_parameter("circle_fit.ransac_min_points", 13);
+    // Configure
+    CircleFitParams circle_params;
+    circle_params.max_fit_error =
+        this->get_parameter("circle_fit.max_fit_error").as_double();
+    circle_params.min_inlier_ratio =
+        this->get_parameter("circle_fit.min_inlier_ratio").as_double();
+    circle_params.max_fit_error_near =
+        this->get_parameter("circle_fit.max_fit_error_near").as_double();
+    circle_params.max_fit_error_far =
+        this->get_parameter("circle_fit.max_fit_error_far").as_double();
+    circle_params.far_distance_threshold =
+        this->get_parameter("circle_fit.far_distance_threshold").as_double();
+    circle_params.min_radius =
+        this->get_parameter("circle_fit.min_radius").as_double();
+    circle_params.max_radius =
+        this->get_parameter("circle_fit.max_radius").as_double();
+    circle_params.max_concave_ratio =
+        this->get_parameter("circle_fit.max_concave_ratio").as_double();
+    circle_params.ransac_iterations =
+        this->get_parameter("circle_fit.ransac_iterations").as_int();
+    circle_params.ransac_inlier_threshold =
+        this->get_parameter("circle_fit.ransac_inlier_threshold").as_double();
+    circle_params.ransac_min_points =
+        this->get_parameter("circle_fit.ransac_min_points").as_int();
+    // 配置
+    reflector_detector_.configCircleFitter(circle_params);
+  }
+
+  void configureGlobalTracker() {
+    this->declare_parameter("global_tracking.enable", true);
+    this->declare_parameter("global_tracking.match_distance_threshold", 0.3);
+    this->declare_parameter("global_tracking.match_distance_inactive", 0.5);
+    this->declare_parameter("global_tracking.confirm_time_window", 1.0);
+    this->declare_parameter("global_tracking.min_detections_in_window", 8);
+    this->declare_parameter("global_tracking.inactive_timeout", 5.0);
+    this->declare_parameter("global_tracking.max_inactive_time", 60.0);
+    this->declare_parameter("global_tracking.position_filter_alpha", 0.3);
+    this->declare_parameter("global_tracking.position_filter_beta", 0.2);
+    this->declare_parameter("global_tracking.min_std_dev", 0.02);
+    this->declare_parameter("global_tracking.max_std_dev", 0.5);
+    this->declare_parameter("global_tracking.min_confidence_to_track", 0.3);
+    this->declare_parameter("global_tracking.confidence_filter_alpha", 0.2);
+    this->declare_parameter("global_tracking.diameter_filter_alpha", 0.3);
+
+    // Configure global tracking
+    bool use_global_tracker = false;
+    use_global_tracker =
+        this->get_parameter("global_tracking.enable").as_bool();
+    GlobalReflectorTracker::Config tracking_config;
+    tracking_config.match_distance_threshold =
+        this->get_parameter("global_tracking.match_distance_threshold")
+            .as_double();
+    tracking_config.match_distance_inactive =
+        this->get_parameter("global_tracking.match_distance_inactive")
+            .as_double();
+    tracking_config.confirm_time_window =
+        this->get_parameter("global_tracking.confirm_time_window").as_double();
+    tracking_config.min_detections_in_window =
+        this->get_parameter("global_tracking.min_detections_in_window")
+            .as_int();
+    tracking_config.inactive_timeout =
+        this->get_parameter("global_tracking.inactive_timeout").as_double();
+    tracking_config.max_inactive_time =
+        this->get_parameter("global_tracking.max_inactive_time").as_double();
+    tracking_config.position_filter_alpha =
+        this->get_parameter("global_tracking.position_filter_alpha")
+            .as_double();
+    tracking_config.position_filter_beta =
+        this->get_parameter("global_tracking.position_filter_beta").as_double();
+    tracking_config.min_std_dev =
+        this->get_parameter("global_tracking.min_std_dev").as_double();
+    tracking_config.max_std_dev =
+        this->get_parameter("global_tracking.max_std_dev").as_double();
+    tracking_config.min_confidence_to_track =
+        this->get_parameter("global_tracking.min_confidence_to_track")
+            .as_double();
+    tracking_config.confidence_filter_alpha =
+        this->get_parameter("global_tracking.confidence_filter_alpha")
+            .as_double();
+    tracking_config.diameter_filter_alpha =
+        this->get_parameter("global_tracking.diameter_filter_alpha")
+            .as_double();
+    if (use_global_tracker) {
+      // Set the config to Detector
+      RCLCPP_INFO(
+          this->get_logger(),
+          "#===反光柱检测器==== 开启全局反光柱跟踪器短时跟踪功能!!! ###");
+      reflector_detector_.configGlobalReflectorTracker(tracking_config);
+    }
+    use_short_tracker_ = use_global_tracker;
+  }
+
+  //---------------------- Parameters -------------------
   std::string bag_path_;
   std::string scan_topic_;
   std::string odom_topic_;
   std::string classification_method_;
-  double raw_intensity_threshold_;
-  bool enable_interpolation_;
-  // 点云矫正器
-  bool use_distort_corrector_;
-  std::string distortcorrect_method_;
-  // 聚类器
-  FixedDBSCAN fixed_dbscan_;
+  double raw_intensity_threshold_; // 重要
 
-  double min_confidence_;
   // 激光与里程计相关数据
   std::unordered_map<int64_t, sensor_msgs::msg::LaserScan::SharedPtr>
       scan_map_; // Map of scan messages by timestamp
   std::unordered_map<int64_t, nav_msgs::msg::Odometry::SharedPtr> odom_map_;
   std::vector<int64_t> odom_timestamps_; // Vector of frames
-  TimeOrderQueue<transforms::Rigid3d> odom_queue_;
-  std::vector<int64_t> scan_timestamps_;
-
-  // Frame data
-  std::vector<std::shared_ptr<FrameData>> frames_;
+  TimeOrderQueue<transforms::Rigid3d> odom_queue_; // 可用于在线里程计的队列管理
+  std::vector<int64_t> scan_timestamps_;           // 离线扫描时间
+  std::vector<std::shared_ptr<FrameData>> frames_; // 实际可用帧
+  // 用于估计反光柱的激光帧，离线播放时可用帧调整;
   size_t current_frame_index_;
-
-  // Transform
+  // 激光雷达相对于基座的位姿变换
   geometry_msgs::msg::TransformStamped laser_to_base_;
+
+  // 点云矫正器
+  bool use_distort_corrector_;
+  std::string distortcorrect_method_;
+  // 聚类器
+  FixedDBSCAN fixed_dbscan_;
+  double min_confidence_;
   // Pose tracking
   PoseTracker pose_tracker_;
   // Detection modules
-  PCAShapeClassifier pca_classifier_;
-  CircleFitter circle_fitter_;
-  PracticalDescriptorExtractor descriptor_extractor_;
-  // Global reflector tracking
-  GlobalReflectorTracker global_reflector_tracker_;
+  bool use_short_tracker_;
+  RefelctorDetector reflector_detector_;
 
   // 可视化 Publishers
   std::shared_ptr<VisualizationHelper> visualization_helper_;

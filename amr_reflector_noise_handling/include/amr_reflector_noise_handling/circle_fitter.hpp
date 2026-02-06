@@ -7,6 +7,7 @@
 #include <random>
 #include <stack>
 #include <vector>
+#include <iostream>
 
 namespace amr_reflector_noise_handling {
 
@@ -45,15 +46,16 @@ struct ConvexityMetrics {
 struct CircleFitParams {
   double max_fit_error = 0.03;         // 最大拟合误差3cm
   double min_inlier_ratio = 0.56;      // 最小内点比例50%
-  double max_fit_error_near = 0.003;   // 近距离最大误差4cm
-  double max_fit_error_far = 0.004;    // 远距离最大误差2cm
-  double far_distance_threshold = 3.0; // 远距离阈值3m
+  double max_fit_error_near = 0.03;   // 近距离最大误差3cm
+  double max_fit_error_far = 0.02;    // 远距离最大误差2cm
+  double far_distance_threshold = 1.5; // 远距离阈值1.5m
   double min_radius = 0.02;            // 最小半径2cm
   double max_radius = 0.05;            // 最大半径5cm
   double inlier_threshold = 0.02;      // 内点阈值2cm
 
   // 凸性检测参数
-  double min_convexity_ratio = 0.7;       // 最小凸性比率
+  double max_concave_ratio =  0.2; // 最大凹性度
+  double min_convexity_ratio = 0.7; // 最小凸性比率
   double min_angular_span = M_PI / 6;     // 最小角度跨度30度
   double max_angular_span = 2 * M_PI / 3; // 最大角度跨度120度
   double max_curvature_variance = 0.5;    // 最大曲率方差
@@ -61,6 +63,7 @@ struct CircleFitParams {
   // RANSAC参数
   int ransac_iterations = 100;             // RANSAC迭代次数
   double ransac_inlier_threshold = 0.0015; // RANSAC内点阈值
+  int ransac_min_points = 13; // RANSAC 拟合圆的最小参数
 };
 
 /**
@@ -212,8 +215,8 @@ public:
     best_result.total_points = points.size();
     best_result.inlier_count = 0;
 
-    if (points.size() < 13) {
-      std::cout << "拟合圆点数少于15个点" << std::endl;
+    if (points.size() < params_.ransac_min_points) {
+      std::cout << "RANSAC拟合圆点数过少点" << std::endl;
       return best_result;
     }
 
@@ -295,10 +298,7 @@ public:
       }
       best_result.concave_ratio = double(concave_count) / points.size();
       best_result.convex_ratio = double(convex_count) / points.size();
-      std::cerr << "凹半圆检测比率=" << best_result.concave_ratio
-                << " 凸半圆检测比率=" << best_result.convex_ratio << std::endl;
     }
-
     return best_result;
   }
 
@@ -447,11 +447,16 @@ public:
    */
   bool validateFit(const CircleFitResult &fit, int original_point_count,
                    double distance) const {
+    // 0. 凸性判断
+    if (fit.concave_ratio > params_.max_concave_ratio) {
+      fprintf(stderr, "RANSAC圆拟合为凹型,判定失效");
+      return false;
+    }
 
     // 1. 拟合误差检查
     double max_error = params_.max_fit_error;
 
-    // 根据距离调整误差阈值
+    // 根据距离调整误差阈值f
     if (distance < params_.far_distance_threshold) {
       max_error = params_.max_fit_error_near; // 近距离允许更大误差fit_error
     } else {

@@ -1,6 +1,6 @@
-#pragma once
+#ifndef AMR_REFELCTOR_NOISE_HANDLING_PCA_SHAPE_CLASSIFIER_HPP
+#define AMR_REFELCTOR_NOISE_HANDLING_PCA_SHAPE_CLASSIFIER_HPP
 
-#include "amr_reflector_noise_handling/circle_fitter.hpp"
 #include "amr_reflector_noise_handling/types.hpp"
 #include <algorithm>
 #include <cmath>
@@ -32,10 +32,14 @@ struct ShapeFeatures {
  * @brief 形状分类参数
  */
 struct ShapeClassificationParams {
-  double max_elongation_for_post = 1.5;   // 反光柱最大延伸度
-  double min_elongation_for_board = 3.0;  // 反光板最小延伸度
-  double min_linearity_for_board = 0.7;   // 反光板最小线性度
-  double max_linearity_for_post = 0.5;    // 反光柱最大线性度
+  double max_elongation_post = 9.5;      // 反光柱最大延伸度
+  double min_elongation_board = 3.0;     // 反光板最小延伸度
+  double max_linearity_post = 0.7;       // 反光板最小线性度
+  double min_linearity_board = 0.5;      // 反光柱最大线性度
+  double near_distance = 1.3;            // 近距离二次判定
+  int min_points = 13;                    // 远处聚类点最小点数判定
+  int near_min_points = 20;              // 二次判定近距离聚类点数
+  double near_max_linearity_post = 0.89; // 二次判定线性度
 };
 
 /**
@@ -66,7 +70,6 @@ public:
    * @brief 计算形状特征（基于PCA）
    *
    * @param points 点云
-   * @param circle_fitter 圆拟合器（用于计算圆形度）
    * @return ShapeFeatures 形状特征
    */
   ShapeFeatures computeShapeFeatures(const std::vector<Point> &points) const {
@@ -130,22 +133,21 @@ public:
    * @brief 基于形状特征分类物体
    *
    * @param features 形状特征
-   * @param circle_fit 圆拟合结果
    * @return ObjectType 物体类型
    */
   ObjectType classifyObject(const ShapeFeatures &features) const {
 
     // 规则4: 点数过少 → 噪声
-    if (features.point_count < 13) {
+    if (features.point_count < params_.min_points) {
       return CLUSTER_NOISE;
     }
 
     // 规则1: 圆形度高 → 反光柱
-    if (features.elongation <= params_.max_elongation_for_post &&
-        features.linearity <= params_.max_linearity_for_post) {
-      // 规则5： 近距离聚类数目要大于20个点且线性度要高 否则为噪声
-      if(features.center.distanceFromOrigin() < 1.30) {
-        if(features.point_count < 20 || features.linearity > 0.89) {
+    if (features.elongation <= params_.max_elongation_post &&
+        features.linearity <= params_.max_linearity_post) {
+      // 规则5： 二次判定近距离聚类数目要大于20个点且线性度要高 否则为噪声
+      if (features.center.distanceFromOrigin() < params_.near_distance) {
+        if (features.point_count < params_.near_min_points || features.linearity > params_.near_max_linearity_post) {
           return CLUSTER_NOISE;
         }
       }
@@ -153,16 +155,10 @@ public:
     }
 
     // 规则2: 延伸度大 + 线性度高 → 反光板
-    if (features.elongation >= params_.min_elongation_for_board &&
-        features.linearity >= params_.min_linearity_for_board) {
+    if (features.elongation >= params_.min_elongation_board &&
+        features.linearity >= params_.min_linearity_board) {
       return REFLECTOR_BOARD;
     }
-
-    // 规则3: 圆形度低 + 拟合误差大 → 噪声
-    // if (features.circularity <= params_.max_circularity_for_noise &&
-    //     circle_fit.fit_error >= params_.max_fit_error_for_noise) {
-    //   return CLUSTER_NOISE;
-    // }
 
     return OBJECT_UNKNOWN;
   }
@@ -240,3 +236,5 @@ private:
 };
 
 } // namespace amr_reflector_noise_handling
+
+#endif // !AMR_REFELCTOR_NOISE_HANDLING_PCA_SHAPE_CLASSIFIER_HPP
