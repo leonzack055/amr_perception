@@ -7,7 +7,7 @@ VisualizationHelper::VisualizationHelper(const rclcpp::Node::SharedPtr &node)
   node_->declare_parameter("enbale_laser_pub", true);
   node_->declare_parameter("use_global_frame", false);
   node_->declare_parameter("coordinate_frame", "laser");
-  node_->declare_parameter("pub_laser_topic", "/scan");
+  node_->declare_parameter("pub_laser_topic", "/reflector_scan");
   node_->declare_parameter("pub_filtered_topic", "/filtered_pointcould");
   node_->declare_parameter("pub_clustered_topic", "/clustered_pointcloud");
   node_->declare_parameter("pub_reflector_topic", "/detected_reflectors");

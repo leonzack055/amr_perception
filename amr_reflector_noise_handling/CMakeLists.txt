@@ -26,7 +26,10 @@ find_package(pcl_conversions REQUIRED)
 # Main detector node (using header-only implementations for new modules)
 add_executable(reflector_noise_node
   src/reflector_noise_node.cpp
-  src/geometric_validator.cpp
+  src/types/msg_conversion.cpp
+  src/global_reflector_tracker.cpp
+  src/reflector_detector.cpp
+  src/visualization_helper.cpp
 )
 
 target_include_directories(reflector_noise_node PUBLIC
@@ -46,6 +49,9 @@ ament_target_dependencies(
   visualization_msgs
   tf2
   tf2_ros
+  tf2_eigen
+  tf2_msgs
+  tf2_geometry_msgs
   absl
   pcl_conversions
 )

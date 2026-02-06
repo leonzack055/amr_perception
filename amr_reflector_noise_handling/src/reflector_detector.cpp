@@ -25,8 +25,8 @@ void RefelctorDetector::configCircleFitter(const CircleFitParams &config) {
           "✪✪✪✪✪✪✪✪✪✪✪✪✪✪✪✪配置圆拟合参数:✪✪✪✪✪✪✪✪✪✪✪✪✪✪✪✪\n"
           "[✿]max_fit_error:%.3f\t[✿]max_fit_error_far:%.3f\t"
           "[✿]max_fit_error_near:%.3f\n[✿]min_inlier_ratio:%.3f\t"
-          "[✿]far_distance_threshold:%.3f\t[✿]min_radius:%.3f\t"
-          "[✿]max_radius:%.3f\t[✿]max_concave_ratio:%.3f\n"
+          "[✿]min_radius:%.3f\t[✿]max_radius:%.3f\n"
+          "[✿]far_distance_threshold:%.3f\t[✿]max_concave_ratio:%.3f\n"
           "[✿]ransac_iterations:%d\t[✿]ransac_inlier_threshold:%.3f\t"
           "[✿]ransac_min_points:%d\n",
           config.max_fit_error, config.max_fit_error_far,

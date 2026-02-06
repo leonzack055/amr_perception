@@ -101,6 +101,17 @@ public:
     return result;
   }
 
+  TimestampedData<T> pop_front() {
+    TimestampedData<T> front_data = std::move(queue.front());
+    queue.pop_front(); // deque/list的头部删除接口
+    return front_data;
+  }
+  TimestampedData<T> pop_back() {
+    TimestampedData<T> back_data = std::move(queue.back());
+    queue.pop_back(); // deque/list的头部删除接口
+    return back_data;
+  }
+
   // 查找队列中第一个元素 (oldest)
   const TimestampedData<T> &front() const {
     if (queue.empty()) {
