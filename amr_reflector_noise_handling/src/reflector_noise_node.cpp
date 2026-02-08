@@ -26,8 +26,8 @@ Modified: !date!
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
-#include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <thread>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -46,7 +46,6 @@ Modified: !date!
 using TimeLaserScan = amr_reflector_noise_handling::TimestampedData<
     sensor_msgs::msg::LaserScan::SharedPtr>;
 using namespace amr_reflector_noise_handling;
-
 
 /**
  * @brief Frame data structure for storing scan and odometry information
@@ -76,15 +75,17 @@ struct FrameData {
 class ReflectorNoiseNode : public rclcpp::Node {
 public:
   ReflectorNoiseNode()
-      : Node("reflector_noise_node"), frame_index_(0),base_frame_("") {
+      : Node("reflector_noise_node"), frame_index_(0), base_frame_("") {
     // Declare parameters
     this->declare_parameter("scan_topic", "/scan");
     this->declare_parameter("odom_topic", "/odom_combined");
     this->declare_parameter("classification_method", "pca");
     this->declare_parameter("raw_intensity_threshold", 1000.0);
     this->declare_parameter("min_confidence", 0.5);
-    this->declare_parameter("max_odom_age", 1.0); // Maximum age of odometry data in seconds
-    
+    this->declare_parameter("max_odom_age",
+                            1.0); // Maximum age of odometry data in seconds
+    this->declare_parameter("detect_mode", "shortTime");
+    this->declare_parameter("mode", "online");
     // Get parameters
     scan_topic_ = this->get_parameter("scan_topic").as_string();
     odom_topic_ = this->get_parameter("odom_topic").as_string();
@@ -94,6 +95,9 @@ public:
         this->get_parameter("raw_intensity_threshold").as_double();
     min_confidence_ = this->get_parameter("min_confidence").as_double();
     max_odom_age_ = this->get_parameter("max_odom_age").as_double();
+    // 获取基础参数配置
+    detect_mode_ = this->get_parameter("detect_mode").as_string();
+    mode_ = this->get_parameter("mode").as_string();
 
     // 配置点云矫正器
     configureDistortionCorrector();
@@ -101,6 +105,8 @@ public:
     configureFixedDBSCAN();
     // Configure detection modules
     configureDetectionModules();
+    // 配置cartographer兼容模式
+    configureCartoGrapher();
 
     // Initialize TF buffer and listener
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -109,12 +115,27 @@ public:
     // Create subscribers
     scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
         scan_topic_, 10,
-        std::bind(&ReflectorNoiseNode::scanCallback, this, std::placeholders::_1));
-
+        std::bind(&ReflectorNoiseNode::scanCallback, this,
+                  std::placeholders::_1));
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
         odom_topic_, 100,
-        std::bind(&ReflectorNoiseNode::odomCallback, this, std::placeholders::_1));
+        std::bind(&ReflectorNoiseNode::odomCallback, this,
+                  std::placeholders::_1));
+    if (use_cartographer_mode_) {
+      carto_basepose_sub_ =
+          this->create_subscription<geometry_msgs::msg::PoseStamped>(
+              carto_basepose_topic_, 100,
+              std::bind(&ReflectorNoiseNode::cartoPoseCallback, this,
+                        std::placeholders::_1));
+    }
 
+    // 判断程序是否为在线模式
+    if (mode_ != "online") {
+      RCLCPP_ERROR(this->get_logger(),
+                   "当前节点只支持在线模式,而当前参数配置为[mode:=%s]模式",
+                   mode_.c_str());
+      rclcpp::shutdown(nullptr, "程序启动失败，只支持在线模式");
+    }
     RCLCPP_INFO(this->get_logger(), "在线反光柱检测节点初始化完成");
     RCLCPP_INFO(this->get_logger(), "扫描话题: %s", scan_topic_.c_str());
     RCLCPP_INFO(this->get_logger(), "里程计话题: %s", odom_topic_.c_str());
@@ -132,11 +153,11 @@ private:
    */
   void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg) {
     int64_t scan_timestamp = rclcpp::Time(scan_msg->header.stamp).nanoseconds();
-    
+
     // Store the scan in the queue
     scan_queue_.push(TimeLaserScan(scan_msg, scan_timestamp));
     // Clean up old scans (keep last 5 seconds)
-    while(scan_queue_.size() > 2) {
+    while (scan_queue_.size() > 2) {
       auto timeLaserScanPtr = scan_queue_.pop_front();
       processFrame(timeLaserScanPtr);
     }
@@ -146,13 +167,14 @@ private:
   /**
    * @brief Process the oldest frame in the queue (double-frame extraction)
    */
-  void processFrame(const TimeLaserScan& current_frame_data) {
-    if(odom_queue_.empty()) return;
+  void processFrame(const TimeLaserScan &current_frame_data) {
+    if (odom_queue_.empty())
+      return;
     // Get the oldest frame and the next frame
     const auto &next_frame_data = scan_queue_.front();
     int64_t scan_timestamp = current_frame_data.timestamp;
     int64_t next_scan_timestamp = next_frame_data.timestamp;
-    
+
     // Try to get the laser_to_base transform from TF
     std::string target_frame = current_frame_data.data->header.frame_id;
     std::string source_frame = base_frame_;
@@ -169,8 +191,8 @@ private:
       }
     } catch (tf2::TransformException &ex) {
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                          "无法获取从%s到%s的变换: %s",
-                          source_frame.c_str(), target_frame.c_str(), ex.what());
+                           "无法获取从%s到%s的变换: %s", source_frame.c_str(),
+                           target_frame.c_str(), ex.what());
       has_laser_to_base_ = false;
       return;
     }
@@ -207,12 +229,28 @@ private:
   /**
    * @brief Callback for odometry messages
    */
+  void
+  cartoPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr pose_msg) {
+    if (!use_cartographer_mode_)
+      return;
+    int64_t timestamp = rclcpp::Time(pose_msg->header.stamp).nanoseconds();
+    // Add odometry to the time-ordered queue
+    odom_queue_.push(
+        TimeRigid3d(transforms::ToRigid3d(pose_msg->pose), timestamp));
+    // RCLCPP_INFO(this->get_logger(), "Finshi once odom callback!");
+  }
+
+  /**
+   * @brief Callback for odometry messages
+   */
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom_msg) {
-    int64_t timestamp = rclcpp::Time(odom_msg->header.stamp).nanoseconds();
     if (base_frame_ == "") {
       base_frame_ = odom_msg->child_frame_id;
     }
     // Add odometry to the time-ordered queue
+    if (use_cartographer_mode_)
+      return;
+    int64_t timestamp = rclcpp::Time(odom_msg->header.stamp).nanoseconds();
     odom_queue_.push(
         TimeRigid3d(transforms::ToRigid3d(odom_msg->pose.pose), timestamp));
     // RCLCPP_INFO(this->get_logger(), "Finshi once odom callback!");
@@ -224,14 +262,14 @@ private:
   void processFrame(std::shared_ptr<FrameData> &frame) {
     // 1. 使用扭曲补偿, 并获取扫描时刻插值轨迹
     auto scan_points = convertScanToTimedPoints(frame->scan);
-    
+
     /// 矫正点云并计算laser在矫正拟合器中估计的全局位姿
     if (!frame->between_odoms.empty() && has_laser_to_base_) {
       auto compensated_points = CublicDistortionCorrector::correctDistortion(
           scan_points, frame->between_odoms,
           transforms::ToRigid3d(laser_to_base_), frame->timestamp,
           frame->global_pose);
-      
+
       if (!use_distort_corrector_) {
         frame->compensated_points = convertScanToPoints(frame->scan);
       } else {
@@ -246,15 +284,17 @@ private:
     // 2. Apply intensity filtering
     auto filtered_points =
         filterByIntensity(frame->compensated_points, raw_intensity_threshold_);
-    
-    RCLCPP_DEBUG(this->get_logger(), "处理帧 %zu, 原始点数: %zu, 强度过滤后: %zu",
-                 frame->frame_index, frame->compensated_points.size(), filtered_points.size());
+
+    RCLCPP_DEBUG(this->get_logger(),
+                 "处理帧 %zu, 原始点数: %zu, 强度过滤后: %zu",
+                 frame->frame_index, frame->compensated_points.size(),
+                 filtered_points.size());
 
     // 3. DBSCAN clustering
     frame->filtered_points = filtered_points;
     std::vector<std::vector<Point>> clusters =
         fixed_dbscan_.splitCluster(frame->filtered_points);
-    
+
     if (clusters.empty()) {
       RCLCPP_DEBUG(this->get_logger(), "DBSCAN聚类后无簇");
       frame->reflectors.clear();
@@ -262,6 +302,7 @@ private:
     }
 
     // 4. Detect reflectors
+    // 等价于detect_mode_="shortTime"
     if (use_short_tracker_) {
       frame->reflectors = reflector_detector_.detectReflectorsWithShortTracking(
           clusters, frame->global_pose, frame->timestamp);
@@ -392,7 +433,7 @@ private:
     this->declare_parameter("fixed_dbscan.min_points", 5);
     this->declare_parameter("fixed_dbscan.contine_gap", 3);
     this->declare_parameter("fixed_dbscan.continue_points", 8);
-    
+
     dbscan_config.eps = this->get_parameter("fixed_dbscan.eps").as_double();
     dbscan_config.min_points =
         this->get_parameter("fixed_dbscan.min_points").as_int();
@@ -400,15 +441,15 @@ private:
         this->get_parameter("fixed_dbscan.contine_gap").as_int();
     dbscan_config.continue_points =
         this->get_parameter("fixed_dbscan.continue_points").as_int();
-    
+
     this->fixed_dbscan_ = FixedDBSCAN(dbscan_config);
-    
+
     RCLCPP_INFO_STREAM(this->get_logger(),
                        "[✔] 配置FixedDBSCAN.eps: " << dbscan_config.eps);
     RCLCPP_INFO_STREAM(this->get_logger(), "[✔] 配置FixedDBSCAN.min_points: "
-                                              << dbscan_config.min_points);
+                                               << dbscan_config.min_points);
     RCLCPP_INFO_STREAM(this->get_logger(), "[✔] 配置FixedDBSCAN.contine_gap: "
-                                              << dbscan_config.gap_threshold);
+                                               << dbscan_config.gap_threshold);
     RCLCPP_INFO_STREAM(this->get_logger(),
                        "[✔] 配置FixedDBSCAN.continue_points: "
                            << dbscan_config.continue_points);
@@ -430,7 +471,7 @@ private:
     this->declare_parameter("pca_classification.near_distance", 1.3);
     this->declare_parameter("pca_classification.near_min_points", 20);
     this->declare_parameter("pca_classification.near_max_linearity_post", 0.89);
-    
+
     bool use_pca_classification =
         this->get_parameter("pca_classification.enable").as_bool();
     ShapeClassificationParams pca_params;
@@ -455,7 +496,7 @@ private:
     pca_params.near_max_linearity_post =
         this->get_parameter("pca_classification.near_max_linearity_post")
             .as_double();
-    
+
     reflector_detector_.setDetectMethod(classification_method_);
     if (use_pca_classification) {
       reflector_detector_.configPCAShapeClassifier(pca_params);
@@ -474,7 +515,7 @@ private:
     this->declare_parameter("circle_fit.ransac_iterations", 100);
     this->declare_parameter("circle_fit.ransac_inlier_threshold", 0.0015);
     this->declare_parameter("circle_fit.ransac_min_points", 13);
-    
+
     CircleFitParams circle_params;
     circle_params.max_fit_error =
         this->get_parameter("circle_fit.max_fit_error").as_double();
@@ -498,7 +539,7 @@ private:
         this->get_parameter("circle_fit.ransac_inlier_threshold").as_double();
     circle_params.ransac_min_points =
         this->get_parameter("circle_fit.ransac_min_points").as_int();
-    
+
     reflector_detector_.configCircleFitter(circle_params);
   }
 
@@ -554,7 +595,7 @@ private:
     tracking_config.diameter_filter_alpha =
         this->get_parameter("global_tracking.diameter_filter_alpha")
             .as_double();
-    
+
     if (use_global_tracker) {
       RCLCPP_INFO(
           this->get_logger(),
@@ -564,7 +605,53 @@ private:
     use_short_tracker_ = use_global_tracker;
   }
 
+  void configureCartoGrapher() {
+    this->declare_parameter("merge_carto", false);
+    use_cartographer_mode_ = this->get_parameter("merge_carto").as_bool();
+    if (use_cartographer_mode_) {
+      this->declare_parameter("basepose_topic", "/tracked_pose");
+      this->declare_parameter("optimized_landmark_topic",
+                              "/landmark_poses_list");
+      this->declare_parameter("pub_landmarklist", "/landmark");
+      carto_basepose_topic_ = this->get_parameter("basepose_topic").as_string();
+      carto_optlandmark_topic_ =
+          this->get_parameter("optimized_landmark_topic").as_string();
+      pub_landmarklist_topic_ =
+          this->get_parameter("pub_landmarklist").as_string();
+      // 打印
+      RCLCPP_INFO(
+          this->get_logger(),
+          "#===反光柱检测器==== 开启cartographer 定位&&建图兼容模式!!! ###");
+      if (detect_mode_ == "onlyDetect") {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[✘]   仅使用cartographer 定位信息, 不进行反光柱ID分配优化!!!");
+        RCLCPP_INFO(this->get_logger(),
+                    "[✔]   开启carto全局跟踪位姿监听: topic:{%s}",
+                    carto_basepose_topic_.c_str());
+        RCLCPP_WARN(this->get_logger(),
+                    "[✘]   关闭carto全局优化lanmarks监听: topic:{%s}",
+                    carto_optlandmark_topic_.c_str());
+        RCLCPP_WARN(this->get_logger(),
+                    "[✘]   关闭反光柱ID向carto的消息发送: topic:{%s}",
+                    pub_landmarklist_topic_.c_str());
+      } else if (detect_mode_ == "shortTime") {
+        RCLCPP_INFO(this->get_logger(),
+                    "[✔]   开启carto全局跟踪位姿监听: topic:{%s}",
+                    carto_basepose_topic_.c_str());
+        RCLCPP_INFO(this->get_logger(),
+                    "[✔]   开启carto全局优化lanmarks监听: topic:{%s}",
+                    carto_optlandmark_topic_.c_str());
+        RCLCPP_INFO(this->get_logger(),
+                    "[✘]   开启反光柱ID向carto的消息发送: topic:{%s}",
+                    pub_landmarklist_topic_.c_str());
+      }
+    }
+  }
+
   //---------------------- Parameters -------------------
+  std::string mode_;
+  std::string detect_mode_;
   std::string scan_topic_;
   std::string odom_topic_;
   std::string classification_method_;
@@ -579,9 +666,17 @@ private:
   std::string base_frame_;
   bool has_laser_to_base_{false};
 
+  // cartographer兼容模式
+  bool use_cartographer_mode_{false};
+  std::string carto_basepose_topic_;
+  std::string carto_optlandmark_topic_;
+  std::string pub_landmarklist_topic_;
+
   // ROS2 subscribers
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr
+      carto_basepose_sub_;
 
   // LaserScan queue for double-frame extraction
   TimeOrderQueue<sensor_msgs::msg::LaserScan::SharedPtr> scan_queue_;

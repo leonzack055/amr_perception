@@ -1,0 +1,149 @@
+# 反光柱噪声处理节点参数配置 (分形维数+改进插值+圆拟合+PCA分类版本)
+# Reflector Noise Handling Node Parameters (Fractal Dimension + Improved Interpolation + Circle Fit + PCA Classification Version)
+
+/reflector_noise_node:
+  ros__parameters:
+    use_sim_time: true
+    bag_path: "./bag/linesCargo.bag"
+   # 激光扫描和车体里程的话题
+    scan_topic: "/scan"
+    odom_topic: "/odom_combined"
+    # 地标输出话题
+    landmark_topic: "/landmark_noise"
+    # 可视化标记话题
+    marker_topic: "/reflector_noise_markers"
+    # 可视化输出
+    use_global_frame: true
+    enbale_laser_pub: false
+    coordinate_frame: "odom"
+    pub_laser_topic: "/reflector_scan"
+    pub_filtered_topic: "/reflector_filtered_pointcould"
+    pub_clustered_topic: "/reflector_clustered_pointcloud"
+    pub_reflector_topic: "/reflector_detected_reflectors"
+    pub_trakced_reflector_topic: "/reflector_tracked_reflectors"
+    pub_laser_trajectory_topic: "/reflector_laser_trajectory"
+    pub_laser_pose_topic: "/laser_odom"
+    # 是否开启cartographer兼容模式:
+    mode: "online"
+    detect_mode: "shortTime"
+    merge_carto: false
+    basepose_topic: "/tracked_pose"
+    optimized_landmark_topic: "/landmark_poses_list"
+    pub_landmarklist: "/landmark"
+
+    
+    # === 分类方法选择 ===
+    # 分类方法: "fractal_dimension" (分形维数) 或 "pca" (主成分分析)
+    classification_method: "pca"
+    # 原始强度阈值（固定值，不进行补偿或归一化）
+    raw_intensity_threshold: 1000.0
+
+    # === 阶段1: 矫正固定强度阈值和DBSCAN ===
+    distort_corrector:
+      enable: false
+      method: "Spline"
+    fixed_dbscan:
+      eps: 0.05
+      min_points: 5
+      contine_gap: 3
+      continue_points: 8
+    
+    # === 阶段2: 分形维数过滤 ===
+    fractal_dimension:
+      enable: true
+      # 反光柱的分形维数范围 [1.0, 1.3]
+      min_fd_for_post: 1.0
+      max_fd_for_post: 1.3
+      # 最小点云密度（点数/面积）
+      min_density: 50.0
+    
+    # === 阶段2: PCA形状分类 ===
+    pca_classification:
+      enable: true
+      # 点数少 -> 噪声
+      min_points: 13
+      # 延伸度阈值 - 反光柱应该接近圆形，延伸度应该较小
+      max_elongation_post: 9.50
+      # 延伸度阈值 - 反光板应该有较大的延伸度
+      min_elongation_board: 12.0
+      # 线性度阈值 - 反光柱应该有较低的线性度
+      max_linearity_post: 0.97
+      # 线性度阈值 - 反光板应该有较高的线性度
+      min_linearity_board: 0.93
+      # 近矩离二次判定/m
+      near_distance: 1.30
+      # 近矩离最小点数
+      near_min_points: 20
+      # 近距离扩展线度收紧
+      near_max_linearity_post: 0.89
+
+    # === 阶段3: 圆拟合验证 ===
+    circle_fit:
+      # 最大拟合误差3cm
+      max_fit_error: 0.03
+      # 最小内点比例50%
+      min_inlier_ratio: 0.5
+      # 近距离最大误差1cm（<1.5m）
+      max_fit_error_near: 0.01
+      # 远距离最大误差2cm（>1.5m）
+      max_fit_error_far: 0.02
+      # 远距离阈值1.5
+      far_distance_threshold: 1.5
+      # 最小拟合圆半径
+      min_radius: 0.02
+      # 最大拟合圆半径
+      max_radius: 0.05
+      # 最大拟合凹性判定
+      max_concave_ratio: 0.2
+      # ransac 拟合圆
+      ransac_iterations: 100
+      ransac_inlier_threshold: 0.0015
+      ransac_min_points: 13
+    
+    # === 阶段4: 几何特征和描述子 ===
+    # 最小置信度阈值
+    min_confidence: 0.4
+
+    # === 阶段5: 全局反光柱跟踪器 ===
+    # 全局位置跟踪，用于ID分配和误检测过滤
+    global_tracking:
+      # ===== 是否开启 ======
+      enbale: True
+      # === 数据关联参数 ===
+      # 匹配距离阈值（已确认反光柱，米）
+      match_distance_threshold: 0.3
+      # 匹配距离阈值（非活跃反光柱，米）- 更宽松以允许重新匹配
+      match_distance_inactive: 0.5
+      
+      # === 确认参数 ===
+      # 确认时间窗口（秒）- 在此时间窗口内需要达到最小检测次数
+      confirm_time_window: 1.0
+      # 时间窗口内的最小检测次数
+      min_detections_in_window: 8
+      
+      # === 状态管理参数 ===
+      # 非活跃超时时间（秒）- 超过此时间未检测到，从CONFIRMED转为INACTIVE
+      inactive_timeout: 5.0
+      # 最大非活跃时间（秒）- 超过此时间未检测到，删除tracker
+      max_inactive_time: 60.0
+      
+      # === 位置滤波参数 ===
+      # EMA位置滤波系数α (0.0-1.0) - 较小的值更平滑但响应慢
+      position_filter_alpha: 0.3
+      # EMA方差估计系数β (0.0-1.0) - 用于位置不确定性估计
+      position_filter_beta: 0.2
+      
+      # 最小标准差（米）- 避免不确定性估计过小
+      min_std_dev: 0.02
+      # 最大标准差（米）- 超过此值认为位置不确定度太高
+      max_std_dev: 0.5
+      
+      # === 置信度滤波参数 ===
+      # 最小置信度阈值 - 低于此值的检测不参与跟踪
+      min_confidence_to_track: 0.3
+      # EMA置信度滤波系数 (0.0-1.0)
+      confidence_filter_alpha: 0.2
+      
+      # === 直径滤波参数 ===
+      # EMA直径滤波系数 (0.0-1.0)
+      diameter_filter_alpha: 0.3
