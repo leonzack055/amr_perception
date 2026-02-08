@@ -23,6 +23,43 @@ find_package(absl REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters geometry sample_consensus features kdtree octree search surface)
 find_package(pcl_conversions REQUIRED)
 
+# add detector lib
+add_library(reflector_noise_lib
+  src/geometric_validator.cpp
+  src/types/msg_conversion.cpp
+  src/global_reflector_tracker.cpp
+  src/reflector_detector.cpp
+  src/visualization_helper.cpp
+)
+
+target_include_directories(reflector_noise_lib PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+)
+target_compile_features(reflector_noise_lib PUBLIC c_std_99 cxx_std_17)
+
+ament_target_dependencies(
+  reflector_noise_lib
+  rclcpp
+  rosbag2_cpp
+  sensor_msgs
+  geometry_msgs
+  nav_msgs
+  cartographer_ros_msgs
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_eigen
+  tf2_msgs
+  tf2_geometry_msgs
+  absl
+  pcl_conversions
+)
+target_link_libraries(reflector_noise_lib
+  ${PCL_LIBRARIES}
+)
+
+
 # Main detector node (using header-only implementations for new modules)
 add_executable(reflector_noise_node
   src/reflector_noise_node.cpp
@@ -101,6 +138,15 @@ target_link_libraries(reflector_noise_bag_node
 install(TARGETS reflector_noise_node reflector_noise_bag_node
   DESTINATION lib/${PROJECT_NAME})
 
+install(TARGETS
+  reflector_noise_lib
+  EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include/${PROJECT_NAME}
+)
+
 install(DIRECTORY
   include/
   DESTINATION include/${PROJECT_NAME}
@@ -110,6 +156,26 @@ install(DIRECTORY
 install(DIRECTORY
   config launch
   DESTINATION share/${PROJECT_NAME}/
+)
+# 导出包信息（供依赖包查找）
+ament_export_include_directories(include/${PROJECT_NAME})
+ament_export_libraries(reflector_noise_lib)
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(
+  rclcpp
+  rosbag2_cpp
+  sensor_msgs
+  geometry_msgs
+  nav_msgs
+  cartographer_ros_msgs
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_eigen
+  tf2_msgs
+  tf2_geometry_msgs
+  absl
+  pcl_conversions
 )
 
 if(BUILD_TESTING)
