@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <deque>
 #include <vector>
+#include <optional>
 
 namespace amr_reflector_noise_handling {
 
@@ -126,6 +127,39 @@ public:
       throw std::runtime_error("Queue is empty");
     }
     return queue.back();
+  }
+
+  std::optional<TimestampedData<T>>
+  findClosestTime(int target_time // 目标时间（int类型）
+  ) {
+    // 边界1：vector为空，返回空
+    if (queue.empty()) {
+      std::cerr << "错误：vector为空，无元素可查找！" << std::endl;
+      return std::nullopt;
+    }
+
+    // 边界2：vector只有1个元素，直接返回
+    if (queue.size() == 1) {
+      return queue.front();
+    }
+
+    // 3. 遍历查找最接近的元素
+    int min_diff = abs(queue[0].timestamp - target_time); // 初始化最小差值
+    size_t closest_idx = 0; // 初始化最接近元素的索引
+
+    for (size_t i = 1; i < queue.size(); ++i) {
+      // 计算当前元素与目标的绝对差值
+      int current_diff = abs(queue[i].timestamp - target_time);
+
+      // 找到更小的差值：更新最小差值和索引
+      if (current_diff < min_diff) {
+        min_diff = current_diff;
+        closest_idx = i;
+      }
+    }
+
+    // 返回最接近的元素
+    return queue[closest_idx];
   }
 
   // Check if queue is empty
