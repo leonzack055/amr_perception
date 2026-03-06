@@ -24,6 +24,7 @@ public:
     return std::move(global_reflector_tracker_.getConfirmedReflectors());
   }
   void setDetectMethod(const std::string& method) {classification_method_ = method;}
+  void reset() {global_reflector_tracker_.reset();}
 private:
   Point computeCentroid(const std::vector<Point> &cluster) {
     Point centroid;
